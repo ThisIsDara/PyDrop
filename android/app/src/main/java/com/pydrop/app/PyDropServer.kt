@@ -1,5 +1,6 @@
 package com.pydrop.app
 
+import android.content.Context
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
@@ -11,31 +12,28 @@ import java.util.concurrent.CopyOnWriteArrayList
 class PyDropServer(
     private val port: Int,
     private val deviceId: String,
-    private val deviceName: String,
+    private val context: Context,
     private val onEvent: (String, Map<String, Any>) -> Unit
 ) : NanoHTTPD(port) {
 
     private val receivedFiles = CopyOnWriteArrayList<MutableMap<String, Any>>()
-    private var session: NanoHTTPDHTTPSession? = null
 
-    override fun serve(session: HTTPSession): Response {
-        this.session = session
+    override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
         val method = session.method
 
         return when {
-            uri == "/" -> serveFile()
+            uri == "/" -> serveIndex()
             uri == "/api/info" -> serveInfo()
             uri == "/api/files" -> serveFiles()
             uri == "/api/download" -> serveDownload(session)
-            uri == "/api/upload" && method == Method.POST -> serveUpload(session)
+            uri == "/api/upload" && method == Method.POST -> handleUpload(session)
             uri == "/api/qr" -> serveQr()
-            uri.startsWith("/api/thumb") -> serveThumb(session)
             else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
         }
     }
 
-    private fun serveFile(): Response {
+    private fun serveIndex(): Response {
         val html = """
 <!DOCTYPE html>
 <html>
@@ -49,7 +47,7 @@ class PyDropServer(
     </style>
 </head>
 <body>
-    <h1>⬡ PyDrop</h1>
+    <h1>&#x2B21; PyDrop</h1>
     <p>Server running</p>
     <a href="/api/files"><button class="btn">View Files</button></a>
 </body>
@@ -61,7 +59,6 @@ class PyDropServer(
     private fun serveInfo(): Response {
         val json = JSONObject().apply {
             put("deviceId", deviceId)
-            put("deviceName", deviceName)
         }
         return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
     }
@@ -79,100 +76,71 @@ class PyDropServer(
         return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
     }
 
-    private fun serveDownload(session: HTTPSession): Response {
+    private fun serveDownload(session: IHTTPSession): Response {
         val params = session.parameters
-        val fileId = params["id"]?.firstOrNull() ?: return notFound()
+        val fileId = params["id"]?.firstOrNull()
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "No file id")
 
-        val file = receivedFiles.find { it["id"] == fileId } ?: return notFound()
-        val path = file["path"] as? String ?: return notFound()
-        val name = file["name"] as? String ?: "file"
+        val fileInfo = receivedFiles.find { it["id"] == fileId }
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found")
+        val path = fileInfo["path"] as? String
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File path not found")
+        val name = fileInfo["name"] as? String ?: "file"
 
         val f = File(path)
-        if (!f.exists()) return notFound()
+        if (!f.exists()) return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found on disk")
 
-        return newFixedLengthResponse(Response.Status.OK, "application/octet-stream", f.inputStream(), f.length())
-            .addHeader("Content-Disposition", "attachment; filename=\"$name\"")
+        val resp = newChunkedResponse(Response.Status.OK, "application/octet-stream", f.inputStream())
+        resp.addHeader("Content-Disposition", "attachment; filename=\"$name\"")
+        return resp
     }
 
-    private fun serveUpload(session: HTTPSession): Response {
-        try {
-            val files = session.parameters["file"]
-            if (files.isNullOrEmpty()) return badRequest()
+    private fun handleUpload(session: IHTTPSession): Response {
+        return try {
+            // NanoHTTPD parses multipart and writes temp files; the map values are temp file paths
+            val files = mutableMapOf<String, String>()
+            session.parseBody(files)
 
-            val tempFile = session.parameters["file"]?.firstOrNull()
-            if (tempFile == null) {
-                // Parse multipart manually
-                val contentType = session.headers["content-type"] ?: return badRequest()
-                if (contentType.contains("multipart")) {
-                    return handleMultipartUpload(session)
-                }
-                return badRequest()
-            }
+            val tempPath = files["file"]
+                ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "No file field")
 
-            return ok()
-        } catch (e: Exception) {
-            Log.e("PyDropServer", "Upload error", e)
-            return error(e.message ?: "Error")
-        }
-    }
+            // Get original filename from parameters
+            val filename = session.parameters["file"]?.firstOrNull()
+                ?: "file_${System.currentTimeMillis()}"
 
-    private fun handleMultipartUpload(session: HTTPSession): Response {
-        try {
-            val inputStream = session.inputStream
-            val bytes = inputStream.readBytes()
-            
-            // Find filename in boundary
-            val body = String(bytes)
-            val filenameMatch = Regex("filename=\"([^\"]+)\"").find(body)
-            val filename = filenameMatch?.groupValues?.get(1) ?: "file_${System.currentTimeMillis()}"
-            
-            // Find file content start
-            val boundary = session.headers["content-type"]?.substringAfter("boundary=") ?: return badRequest()
-            val boundaryStart = body.indexOf("\r\n\r\n")
-            if (boundaryStart < 0) return badRequest()
-            
-            val fileContent = body.substring(boundaryStart + 4, body.lastIndexOf("--$boundary"))
-            
             val fileId = UUID.randomUUID().toString().take(8)
-            val saveDir = File(applicationWorkingDirectory, "received")
+            val saveDir = File(context.filesDir, "received")
             saveDir.mkdirs()
-            val file = File(saveDir, "${fileId}_$filename")
-            FileOutputStream(file).use { it.write(fileContent.toByteArray()) }
-            
+            val dest = File(saveDir, "${fileId}_$filename")
+
+            File(tempPath).copyTo(dest, overwrite = true)
+
             val fileInfo = mutableMapOf<String, Any>(
                 "id" to fileId,
                 "name" to filename,
-                "size" to file.length(),
-                "time" to java.time.Instant.now().toString(),
-                "path" to file.absolutePath
+                "size" to dest.length(),
+                "time" to System.currentTimeMillis().toString(),
+                "path" to dest.absolutePath
             )
             receivedFiles.add(fileInfo)
-            
             onEvent("file_received", fileInfo)
-            
-            return newFixedLengthResponse(Response.Status.OK, "application/json", 
-                JSONObject().put("success", true).put("fileId", fileId).toString())
+
+            newFixedLengthResponse(
+                Response.Status.OK, "application/json",
+                JSONObject().put("success", true).put("fileId", fileId).toString()
+            )
         } catch (e: Exception) {
-            return error(e.message ?: "Upload failed")
+            Log.e("PyDropServer", "Upload error", e)
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", e.message ?: "Upload failed")
         }
     }
 
     private fun serveQr(): Response {
-        // Return simple QR placeholder
-        val qrData = "pydrop://localhost:$port/$deviceId"
+        val qrData = "pydrop://:$port/$deviceId"
         return newFixedLengthResponse(Response.Status.OK, "text/plain", qrData)
     }
 
-    private fun serveThumb(session: HTTPSession): Response {
-        return notFound()
-    }
-
-    private fun ok() = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"success\":true}")
-    private fun badRequest() = newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Bad request")
-    private fun notFound() = newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
-    private fun error(msg: String) = newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", msg)
-
-    fun stop() {
-        super.stop()
+    fun stopServer() {
+        stop()
     }
 }

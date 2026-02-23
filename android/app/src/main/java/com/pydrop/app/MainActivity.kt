@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
@@ -115,7 +116,7 @@ class MainActivity : AppCompatActivity() {
         
         lifecycleScope.launch {
             try {
-                server = PyDropServer(httpPort, deviceId, deviceName) { event, data ->
+                server = PyDropServer(httpPort, deviceId, this@MainActivity) { event, data ->
                     runOnUiThread {
                         handleServerEvent(event, data)
                     }
@@ -243,9 +244,8 @@ class MainActivity : AppCompatActivity() {
                 val fileBytes = inputStream?.readBytes() ?: return@launch
                 
                 val boundary = "----WebKitFormBoundary${UUID.randomUUID()}"
-                val body = okhttp3.RequestBody.create(
-                    "multipart/form-data; boundary=$boundary".toMediaType(),
-                    buildMultipartBody(fileName, fileBytes, boundary)
+                val body = buildMultipartBody(fileName, fileBytes, boundary).toRequestBody(
+                    "multipart/form-data; boundary=$boundary".toMediaType()
                 )
                 
                 val request = Request.Builder()
