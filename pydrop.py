@@ -41,12 +41,10 @@ class Device:
 
 
 class UDPDiscovery:
-    """UDP-based device discovery (works without mDNS)"""
+    """UDP-based device discovery — single shared port, filter by device ID."""
+    # Both sides listen AND broadcast on the same port so cross-platform packets arrive
     DISCOVERY_PORT = 8766
-    BROADCAST_PORT = 8767
-    MESSAGE_ANNOUNCE = b"PYDROP_ANNOUNCE"
-    MESSAGE_DISCOVER = b"PYDROP_DISCOVER"
-    
+
     def __init__(self, device_id: str, device_name: str, http_port: int, on_device_found):
         self.device_id = device_id
         self.device_name = device_name
@@ -54,65 +52,61 @@ class UDPDiscovery:
         self.on_device_found = on_device_found
         self.running = False
         self.sock = None
-        
+
     def start(self):
         self.running = True
         threading.Thread(target=self._listen_loop, daemon=True).start()
         threading.Thread(target=self._broadcast_loop, daemon=True).start()
-        
+
     def _listen_loop(self):
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            self.sock.settimeout(5)
+            self.sock.settimeout(2)
             self.sock.bind(('', self.DISCOVERY_PORT))
-            
+
             while self.running:
                 try:
                     data, addr = self.sock.recvfrom(1024)
-                    local_ip = self._get_local_ip()
-                    if addr[0] != local_ip:
-                        self._handle_message(data, addr[0])
+                    self._handle_message(data, addr[0])
                 except socket.timeout:
                     continue
-                except:
+                except Exception:
+                    if self.running:
+                        continue
                     break
         except Exception as e:
             print(f"UDP listen error: {e}")
-            
+
     def _broadcast_loop(self):
+        msg = f"PYDROP_ANNOUNCE|{self.device_id}|{self.device_name}|{self.http_port}".encode()
         while self.running:
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                msg = f"PYDROP_ANNOUNCE|{self.device_id}|{self.device_name}|{self.http_port}"
-                sock.sendto(msg.encode(), ('255.255.255.255', self.BROADCAST_PORT))
-                sock.close()
-            except:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    s.sendto(msg, ('255.255.255.255', self.DISCOVERY_PORT))
+            except Exception:
                 pass
-            threading.Event().wait(5)
-            
+            threading.Event().wait(3)
+
     def _handle_message(self, data: bytes, addr: str):
         try:
-            msg = data.decode()
-            if msg.startswith("PYDROP_ANNOUNCE"):
-                parts = msg.split("|")
-                if len(parts) >= 4:
-                    remote_id = parts[1]
-                    if remote_id != self.device_id:
-                        device = Device(parts[2], addr, 8765, int(parts[3]), remote_id)
-                        self.on_device_found(device)
-        except:
+            msg = data.decode().strip()
+            if not msg.startswith("PYDROP_ANNOUNCE"):
+                return
+            parts = msg.split("|")
+            if len(parts) < 4:
+                return
+            remote_id = parts[1]
+            # Filter own packets by device ID — reliable across NAT/loopback
+            if remote_id == self.device_id:
+                return
+            device = Device(parts[2], addr, self.DISCOVERY_PORT, int(parts[3]), remote_id)
+            self.on_device_found(device)
+        except Exception:
             pass
-            
-    def _get_local_ip(self):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(('10.255.255.255', 1))
-            return s.getsockname()[0]
-        except:
-            return '127.0.0.1'
-            
+
     def stop(self):
         self.running = False
         if self.sock:
