@@ -1,232 +1,175 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0a0a0f"
-    tools:context=".MainActivity">
+    android:orientation="vertical"
+    android:background="#1a1a1a"
+    android:padding="16dp">
 
-    <ScrollView
+    <!-- Header bar -->
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:fillViewport="true">
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="4dp">
 
-        <LinearLayout
-            android:layout_width="match_parent"
+        <TextView
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp">
+            android:layout_weight="1"
+            android:text="PYDROP"
+            android:textColor="#f59e0b"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.15"/>
 
-            <!-- Header -->
+        <!-- Status pill -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="#242424"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp">
+
             <TextView
+                android:id="@+id/tvStatusDot"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="⬡ PyDrop"
-                android:textColor="#00d4aa"
-                android:textSize="28sp"
+                android:text="●"
+                android:textSize="10sp"
+                android:textColor="#ef4444"
+                android:layout_marginEnd="6dp"/>
+
+            <TextView
+                android:id="@+id/tvStatusText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="NOT READY"
+                android:textColor="#ef4444"
+                android:textSize="11sp"
                 android:textStyle="bold"
-                android:layout_marginBottom="8dp"/>
-
-            <TextView
-                android:id="@+id/tvStatus"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Initializing..."
-                android:textColor="#6a6a7a"
-                android:textSize="12sp"
-                android:layout_marginBottom="16dp"/>
-
-            <!-- Device Info Card -->
-            <androidx.cardview.widget.CardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                app:cardBackgroundColor="#12121a"
-                app:cardCornerRadius="12dp"
-                android:layout_marginBottom="16dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="16dp">
-
-                    <TextView
-                        android:id="@+id/tvIp"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="IP: 192.168.1.x:8080"
-                        android:textColor="#ffffff"
-                        android:textSize="14sp"
-                        android:fontFamily="monospace"/>
-
-                    <TextView
-                        android:id="@+id/tvDeviceId"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="ID: abc123"
-                        android:textColor="#6a6a7a"
-                        android:textSize="12sp"
-                        android:fontFamily="monospace"
-                        android:layout_marginTop="4dp"/>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginTop="12dp">
-
-                        <Button
-                            android:id="@+id/btnQrCode"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="📱 QR"
-                            android:backgroundTint="#12121a"
-                            android:textColor="#00d4aa"
-                            android:layout_marginEnd="8dp"/>
-
-                        <Button
-                            android:id="@+id/btnRefresh"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="🔄 Scan"
-                            android:backgroundTint="#12121a"
-                            android:textColor="#00d4aa"/>
-
-                    </LinearLayout>
-                </LinearLayout>
-            </androidx.cardview.widget.CardView>
-
-            <!-- QR Code -->
-            <androidx.cardview.widget.CardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                app:cardBackgroundColor="#12121a"
-                app:cardCornerRadius="12dp"
-                android:layout_marginBottom="16dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:gravity="center"
-                    android:padding="16dp">
-
-                    <ImageView
-                        android:id="@+id/ivQrCode"
-                        android:layout_width="180dp"
-                        android:layout_height="180dp"
-                        android:contentDescription="QR Code"/>
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Scan to connect from another device"
-                        android:textColor="#6a6a7a"
-                        android:textSize="12sp"
-                        android:layout_marginTop="8dp"/>
-                </LinearLayout>
-            </androidx.cardview.widget.CardView>
-
-            <!-- Server Toggle -->
-            <Button
-                android:id="@+id/btnStartServer"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="⏹ Stop Server"
-                android:backgroundTint="#ff3366"
-                android:layout_marginBottom="16dp"/>
-
-            <!-- Nearby Devices -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="NEARBY DEVICES"
-                android:textColor="#6a6a7a"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="8dp"/>
-
-            <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-                android:id="@+id/swipeRefresh"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp">
-
-                <androidx.recyclerview.widget.RecyclerView
-                    android:id="@+id/rvDevices"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:minHeight="80dp"/>
-            </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
-
-            <TextView
-                android:id="@+id/tvNoDevices"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="🔍 Scanning for devices..."
-                android:textColor="#6a6a7a"
-                android:layout_gravity="center"
-                android:layout_marginBottom="16dp"/>
-
-            <!-- Files -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="FILES"
-                android:textColor="#6a6a7a"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="8dp"/>
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvFiles"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="100dp"/>
-
-            <TextView
-                android:id="@+id/tvNoFiles"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="No files received yet"
-                android:textColor="#6a6a7a"
-                android:layout_gravity="center"
-                android:layout_marginBottom="16dp"/>
-
-            <!-- Action Buttons -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="8dp">
-
-                <Button
-                    android:id="@+id/btnSendFile"
-                    android:layout_width="0dp"
-                    android:layout_height="50dp"
-                    android:layout_weight="1"
-                    android:text="📤 SEND"
-                    android:backgroundTint="#00d4aa"
-                    android:textColor="#0a0a0f"
-                    android:textStyle="bold"
-                    android:layout_marginEnd="8dp"/>
-
-                <Button
-                    android:id="@+id/btnReceive"
-                    android:layout_width="0dp"
-                    android:layout_height="50dp"
-                    android:layout_weight="1"
-                    android:text="📥 RECEIVE"
-                    android:backgroundTint="#ff6b35"
-                    android:textColor="#0a0a0f"
-                    android:textStyle="bold"/>
-
-            </LinearLayout>
+                android:fontFamily="monospace"/>
 
         </LinearLayout>
-    </ScrollView>
+    </LinearLayout>
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+    <!-- Device info row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="20dp">
+
+        <TextView
+            android:id="@+id/tvHostname"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="device"
+            android:textColor="#e5e5e5"
+            android:textSize="13sp"
+            android:fontFamily="monospace"/>
+
+        <TextView
+            android:id="@+id/tvIp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0.0.0.0:8080"
+            android:textColor="#737373"
+            android:textSize="12sp"
+            android:fontFamily="monospace"/>
+
+    </LinearLayout>
+
+    <!-- Divider -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#383838"
+        android:layout_marginBottom="12dp"/>
+
+    <!-- Section label -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="NEARBY DEVICES"
+        android:textColor="#737373"
+        android:textSize="10sp"
+        android:textStyle="bold"
+        android:fontFamily="monospace"
+        android:letterSpacing="0.15"
+        android:layout_marginBottom="8dp"/>
+
+    <!-- Device list (takes remaining space) -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvDevices"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"/>
+
+        <TextView
+            android:id="@+id/tvNoDevices"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="scanning for devices..."
+            android:textColor="#404040"
+            android:textSize="13sp"
+            android:fontFamily="monospace"/>
+
+    </FrameLayout>
+
+    <!-- Divider -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#383838"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="12dp"/>
+
+    <!-- Action buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnSend"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:text="SEND FILE"
+            android:textColor="#1a1a1a"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:backgroundTint="#f59e0b"
+            android:layout_marginEnd="8dp"
+            android:textAllCaps="true"/>
+
+        <Button
+            android:id="@+id/btnExit"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:text="EXIT"
+            android:textColor="#e5e5e5"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:backgroundTint="#2e2e2e"
+            android:textAllCaps="true"/>
+
+    </LinearLayout>
+
+</LinearLayout>

@@ -1,17 +1,14 @@
 package com.pydrop.app
 
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.google.zxing.BarcodeFormat
-import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.pydrop.app.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -19,10 +16,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.io.FileOutputStream
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.util.*
@@ -32,7 +25,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
-    // Bug 3 fix: add read + write timeouts so large transfers don't hang forever
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -40,17 +32,15 @@ class MainActivity : AppCompatActivity() {
         .build()
 
     private val devices = mutableListOf<Device>()
-    private val files = mutableListOf<ReceivedFile>()
     private lateinit var deviceAdapter: DeviceAdapter
-    private lateinit var fileAdapter: FileAdapter
     private var server: PyDropServer? = null
     private var mDNS: PyDropmDNS? = null
-    private var deviceId: String = ""
     private var deviceName: String = ""
+    private var deviceId: String = ""
     private var localIp: String = ""
-    private var httpPort: Int = 8080
+    private val httpPort: Int = 8080
 
-    // Bug 2 fix: track which device the user selected BEFORE launching the file picker
+    // Track which device was chosen before launching the file picker
     private var pendingTargetDevice: Device? = null
 
     private val pickFileLauncher = registerForActivityResult(
@@ -58,13 +48,11 @@ class MainActivity : AppCompatActivity() {
     ) { uri: Uri? ->
         uri ?: return@registerForActivityResult
         val target = pendingTargetDevice
+        pendingTargetDevice = null
         if (target != null) {
-            // Came from showDeviceOptions — send directly to the chosen device
-            pendingTargetDevice = null
             sendFileToDevice(target, uri)
         } else {
-            // Came from the top-level "Send File" button — show device picker first
-            uploadFile(uri)
+            showDevicePicker(uri)
         }
     }
 
@@ -82,120 +70,65 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupUI() {
-        binding.tvIp.text = "IP: $localIp:$httpPort"
-        binding.tvDeviceId.text = "ID: $deviceId"
+        binding.tvHostname.text = deviceName
+        binding.tvIp.text = "$localIp:$httpPort"
 
         deviceAdapter = DeviceAdapter(devices) { device ->
-            showDeviceOptions(device)
+            pendingTargetDevice = device
+            pickFileLauncher.launch("*/*")
         }
         binding.rvDevices.apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = deviceAdapter
         }
 
-        fileAdapter = FileAdapter(files) { file ->
-            downloadFile(file)
-        }
-        binding.rvFiles.apply {
-            layoutManager = LinearLayoutManager(this@MainActivity)
-            adapter = fileAdapter
-        }
-
-        binding.btnQrCode.setOnClickListener { showQrCode() }
-        binding.btnRefresh.setOnClickListener { refreshDevices() }
-        // Top-level send button: no device pre-selected; file picker leads to device picker
-        binding.btnSendFile.setOnClickListener {
+        binding.btnSend.setOnClickListener {
+            if (devices.isEmpty()) {
+                toast("No devices found")
+                return@setOnClickListener
+            }
             pendingTargetDevice = null
             pickFileLauncher.launch("*/*")
         }
-        binding.btnReceive.setOnClickListener { openWebUI() }
-        binding.swipeRefresh.setOnRefreshListener {
-            refreshDevices()
-            loadFiles()
-            binding.swipeRefresh.isRefreshing = false
-        }
 
-        binding.btnStartServer.text = "⏹ Stop Server"
-        binding.btnStartServer.setOnClickListener { toggleServer() }
-    }
-
-    private fun toggleServer() {
-        if (server != null) {
-            server?.stop()
-            server = null
-            mDNS?.stop()
-            mDNS = null
-            binding.btnStartServer.text = "▶ Start Server"
-            binding.tvStatus.text = "Server Stopped"
-        } else {
-            startServer()
-            binding.btnStartServer.text = "⏹ Stop Server"
+        binding.btnExit.setOnClickListener {
+            finishAndRemoveTask()
         }
     }
 
     private fun startServer() {
-        binding.tvStatus.text = "Server Starting..."
+        setStatus(ready = false, text = "STARTING...")
 
         lifecycleScope.launch {
             try {
                 server = PyDropServer(httpPort, deviceId, deviceName, localIp, this@MainActivity) { event, data ->
                     runOnUiThread {
-                        handleServerEvent(event, data)
+                        if (event == "file_received") {
+                            toast("File received: ${data["name"]}")
+                        }
                     }
                 }
                 server?.start()
 
-                // Bug 1 & 6 fix: PyDropmDNS now needs context for MulticastLock
                 mDNS = PyDropmDNS(deviceName, deviceId, localIp, httpPort, this@MainActivity) { device ->
-                    runOnUiThread {
-                        addDevice(device)
-                    }
+                    runOnUiThread { addDevice(device) }
                 }
                 mDNS?.start()
 
-                binding.tvStatus.text = "Server Running"
-                loadFiles()
-                refreshDevices()
-                generateQrCode()
+                setStatus(ready = true, text = "READY")
 
             } catch (e: Exception) {
-                binding.tvStatus.text = "Error: ${e.message}"
-                Toast.makeText(this@MainActivity, "Server error: ${e.message}", Toast.LENGTH_SHORT).show()
+                setStatus(ready = false, text = "ERROR")
+                toast("Server error: ${e.message}")
             }
         }
     }
 
-    private fun handleServerEvent(event: String, data: Map<String, Any>) {
-        when (event) {
-            "file_received" -> {
-                loadFiles()
-                Toast.makeText(this, "File received: ${data["name"]}", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun generateQrCode() {
-        try {
-            val content = "pydrop://$localIp:$httpPort/$deviceId"
-            val encoder = BarcodeEncoder()
-            val bitmap = encoder.encodeBitmap(content, BarcodeFormat.QR_CODE, 200, 200)
-            binding.ivQrCode.setImageBitmap(bitmap)
-        } catch (e: Exception) {
-            binding.ivQrCode.visibility = View.GONE
-        }
-    }
-
-    private fun refreshDevices() {
-        devices.clear()
-        deviceAdapter.notifyDataSetChanged()
-
-        lifecycleScope.launch {
-            try {
-                mDNS?.discover()
-            } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "Discovery error", Toast.LENGTH_SHORT).show()
-            }
-        }
+    private fun setStatus(ready: Boolean, text: String) {
+        val dotColor = if (ready) 0xFF22c55E.toInt() else 0xFFef4444.toInt()
+        binding.tvStatusDot.setTextColor(dotColor)
+        binding.tvStatusText.text = text
+        binding.tvStatusText.setTextColor(dotColor)
     }
 
     private fun addDevice(device: Device) {
@@ -207,39 +140,23 @@ class MainActivity : AppCompatActivity() {
             devices.add(device)
             deviceAdapter.notifyItemInserted(devices.size - 1)
         }
-
         binding.tvNoDevices.visibility = if (devices.isEmpty()) View.VISIBLE else View.GONE
     }
 
-    private fun showDeviceOptions(device: Device) {
-        // Bug 2 fix: set pendingTargetDevice BEFORE launching the file picker so the
-        // launcher callback knows which device to send to without showing the list again.
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle(device.name)
-            .setMessage("IP: ${device.address}\nPort: ${device.httpPort}")
-            .setPositiveButton("Send File") { _, _ ->
-                pendingTargetDevice = device
-                pickFileLauncher.launch("*/*")
-            }
-            .setNegativeButton("Close", null)
-            .create()
-            .show()
-    }
-
-    // Called when the top-level Send button is tapped and a file was picked
-    private fun uploadFile(uri: Uri) {
+    private fun showDevicePicker(uri: Uri) {
         if (devices.isEmpty()) {
-            Toast.makeText(this, "No devices found", Toast.LENGTH_SHORT).show()
+            toast("No devices found")
             return
         }
-
-        val deviceNames = devices.map { "${it.name} (${it.address})" }.toTypedArray()
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Select Device")
-            .setItems(deviceNames) { _, which ->
-                sendFileToDevice(devices[which], uri)
-            }
-            .setNegativeButton("Cancel", null)
+        if (devices.size == 1) {
+            sendFileToDevice(devices[0], uri)
+            return
+        }
+        val names = devices.map { "${it.name}  ${it.address}" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("SELECT DEVICE")
+            .setItems(names) { _, which -> sendFileToDevice(devices[which], uri) }
+            .setNegativeButton("CANCEL", null)
             .show()
     }
 
@@ -249,34 +166,33 @@ class MainActivity : AppCompatActivity() {
                 val inputStream = contentResolver.openInputStream(uri)
                 val fileName = getFileName(uri)
                 val fileBytes = inputStream?.readBytes() ?: return@launch
+                val size = fmtSize(fileBytes.size.toLong())
 
-                val boundary = "----WebKitFormBoundary${UUID.randomUUID().toString().replace("-", "")}"
+                setStatus(ready = false, text = "SENDING $fileName ($size)...")
+
+                val boundary = "----PyDropBoundary${UUID.randomUUID().toString().replace("-", "")}"
                 val body = buildMultipartBody(fileName, fileBytes, boundary).toRequestBody(
                     "multipart/form-data; boundary=$boundary".toMediaType()
                 )
-
                 val request = Request.Builder()
                     .url("http://${device.address}:${device.httpPort}/api/upload")
                     .post(body)
                     .build()
 
-                withContext(Dispatchers.IO) {
-                    client.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) {
-                            runOnUiThread {
-                                Toast.makeText(this@MainActivity, "Sent $fileName to ${device.name}", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            runOnUiThread {
-                                Toast.makeText(this@MainActivity, "Send failed: ${response.code}", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
+                val ok = withContext(Dispatchers.IO) {
+                    client.newCall(request).execute().use { it.isSuccessful }
+                }
+
+                if (ok) {
+                    setStatus(ready = true, text = "READY")
+                    toast("Sent $fileName to ${device.name}")
+                } else {
+                    setStatus(ready = true, text = "READY")
+                    toast("Send failed")
                 }
             } catch (e: Exception) {
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
+                setStatus(ready = true, text = "READY")
+                toast("Error: ${e.message}")
             }
         }
     }
@@ -292,104 +208,34 @@ class MainActivity : AppCompatActivity() {
     private fun getFileName(uri: Uri): String {
         var name = "file_${System.currentTimeMillis()}"
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (cursor.moveToFirst() && nameIndex >= 0) {
-                name = cursor.getString(nameIndex)
-            }
+            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && idx >= 0) name = cursor.getString(idx)
         }
         return name
     }
 
-    private fun loadFiles() {
-        lifecycleScope.launch {
-            try {
-                val request = Request.Builder()
-                    .url("http://localhost:$httpPort/api/files")
-                    .build()
-
-                val response = withContext(Dispatchers.IO) {
-                    client.newCall(request).execute()
-                }
-
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: return@launch
-                    val jsonObj = JSONObject(body)
-                    val json = jsonObj.getJSONArray("files")
-                    files.clear()
-                    for (i in 0 until json.length()) {
-                        val obj = json.getJSONObject(i)
-                        files.add(ReceivedFile(
-                            id = obj.getString("id"),
-                            name = obj.getString("name"),
-                            size = obj.getLong("size"),
-                            time = obj.optString("time", ""),
-                            direction = obj.optString("direction", "received")
-                        ))
-                    }
-                    fileAdapter.notifyDataSetChanged()
-                    binding.tvNoFiles.visibility = if (files.isEmpty()) View.VISIBLE else View.GONE
-                }
-            } catch (_: Exception) {
-                // Server might not be running yet
-            }
-        }
+    private fun fmtSize(bytes: Long): String = when {
+        bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
+        bytes >= 1_048_576L     -> "%.1f MB".format(bytes / 1_048_576.0)
+        bytes >= 1_024L         -> "%.1f KB".format(bytes / 1_024.0)
+        else                    -> "$bytes B"
     }
 
-    private fun downloadFile(file: ReceivedFile) {
-        lifecycleScope.launch {
-            try {
-                val url = "http://localhost:$httpPort/api/download?id=${file.id}"
-                val request = Request.Builder().url(url).build()
-                val response = withContext(Dispatchers.IO) {
-                    client.newCall(request).execute()
-                }
-
-                if (response.isSuccessful) {
-                    val bytes = response.body?.bytes() ?: return@launch
-                    val downloadsDir = getExternalFilesDir(null)
-                    val dest = File(downloadsDir, file.name)
-                    FileOutputStream(dest).use { it.write(bytes) }
-
-                    val uri = FileProvider.getUriForFile(
-                        this@MainActivity,
-                        "${packageName}.fileprovider",
-                        dest
-                    )
-
-                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, "*/*")
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    startActivity(Intent.createChooser(intent, "Open with"))
-                    Toast.makeText(this@MainActivity, "Saved to Downloads", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun showQrCode() {
-        // Already shown in main UI
-    }
-
-    private fun openWebUI() {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("http://$localIp:$httpPort"))
-        startActivity(intent)
-    }
+    private fun toast(msg: String) =
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     private fun getLocalIpAddress(): String {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces()
             while (interfaces.hasMoreElements()) {
-                val networkInterface = interfaces.nextElement()
-                if (!networkInterface.isUp || networkInterface.isLoopback) continue
-                val addresses = networkInterface.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val address = addresses.nextElement()
-                    if (!address.isLoopbackAddress && address is InetAddress) {
-                        val ip = address.hostAddress ?: continue
-                        if (ip.contains(".")) return ip  // IPv4
+                val iface = interfaces.nextElement()
+                if (!iface.isUp || iface.isLoopback) continue
+                val addrs = iface.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val addr = addrs.nextElement()
+                    if (!addr.isLoopbackAddress && addr is InetAddress) {
+                        val ip = addr.hostAddress ?: continue
+                        if (ip.contains(".")) return ip
                     }
                 }
             }
@@ -407,5 +253,3 @@ class MainActivity : AppCompatActivity() {
 }
 
 data class Device(val id: String, val name: String, val address: String, val httpPort: Int)
-
-data class ReceivedFile(val id: String, val name: String, val size: Long, val time: String, val direction: String)
