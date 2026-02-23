@@ -657,7 +657,9 @@ class PyDropGUI:
         for dev_id, device in self.server.devices.items():
             btn = ctk.CTkButton(scroll, text=f"{device.name}\n{device.address}",
                               fg_color=COLORS['panel'], border_width=1, border_color=COLORS['accent'],
-                              command=lambda d=device: self._do_send(d, files, select_window))
+                              command=lambda d=device: threading.Thread(
+                                  target=self._do_send, args=(d, files, select_window), daemon=True
+                              ).start())
             btn.pack(fill='x', pady=5)
             
     def _do_send(self, device: Device, files: tuple, window):
