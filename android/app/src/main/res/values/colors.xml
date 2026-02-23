@@ -8,4 +8,5 @@
     <color name="text">#ffffff</color>
     <color name="text_dim">#6a6a7a</color>
     <color name="border">#2a2a3a</color>
+    <color name="ic_launcher_background">#00d4aa</color>
 </resources>
