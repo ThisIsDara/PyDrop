@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+.env
+venv/
+.pytest_cache/
+.gradle/
+*.log
+.DS_Store

@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PyDrop - Local File Sharing</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --panel: #12121a;
+            --accent: #00d4aa;
+            --secondary: #ff6b35;
+            --danger: #ff3366;
+            --text: #ffffff;
+            --text-dim: #6a6a7a;
+            --border: #2a2a3a;
+            --glow: 0 0 20px rgba(0, 212, 170, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(ellipse at 20% 20%, rgba(0, 212, 170, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(255, 107, 53, 0.06) 0%, transparent 50%),
+                linear-gradient(180deg, var(--bg) 0%, #0d0d14 100%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            padding: 40px 0;
+        }
+
+        .logo {
+            font-size: 3rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent) 0%, #00ffcc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: var(--glow);
+            margin-bottom: 10px;
+        }
+
+        .tagline {
+            color: var(--text-dim);
+            font-size: 1rem;
+            font-weight: 300;
+        }
+
+        .upload-zone {
+            background: var(--panel);
+            border: 2px dashed var(--border);
+            border-radius: 16px;
+            padding: 50px 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .upload-zone::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(0, 212, 170, 0.1), transparent);
+            transition: left 0.5s ease;
+        }
+
+        .upload-zone:hover::before,
+        .upload-zone.dragover::before {
+            left: 100%;
+        }
+
+        .upload-zone:hover,
+        .upload-zone.dragover {
+            border-color: var(--accent);
+            box-shadow: var(--glow);
+            transform: translateY(-2px);
+        }
+
+        .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 15px;
+            display: block;
+        }
+
+        .upload-text {
+            font-size: 1.1rem;
+            color: var(--text);
+            margin-bottom: 8px;
+        }
+
+        .upload-hint {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+
+        .upload-input {
+            display: none;
+        }
+
+        .section-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin: 30px 0 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, var(--border), transparent);
+        }
+
+        .files-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 15px;
+        }
+
+        .file-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 15px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .file-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), var(--secondary));
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .file-card:hover {
+            transform: translateY(-4px);
+            border-color: var(--accent);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .file-card:hover::before {
+            opacity: 1;
+        }
+
+        .file-thumb {
+            width: 100%;
+            height: 100px;
+            background: var(--bg);
+            border-radius: 8px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            overflow: hidden;
+        }
+
+        .file-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .file-thumb img.loaded {
+            opacity: 1;
+        }
+
+        .file-name {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 5px;
+        }
+
+        .file-size {
+            font-size: 0.75rem;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-dim);
+        }
+
+        .file-time {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            margin-top: 5px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-dim);
+        }
+
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+
+        footer {
+            text-align: center;
+            padding: 40px 0 20px;
+            color: var(--text-dim);
+            font-size: 0.8rem;
+        }
+
+        footer a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(0, 212, 170, 0.1);
+            border: 1px solid rgba(0, 212, 170, 0.3);
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent);
+            margin-bottom: 20px;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            background: var(--accent);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            padding: 30px;
+        }
+
+        .spinner {
+            width: 30px;
+            height: 30px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 15px;
+            }
+
+            .logo {
+                font-size: 2rem;
+            }
+
+            .upload-zone {
+                padding: 30px 20px;
+            }
+
+            .files-grid {
+                grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+                gap: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">⬡ PyDrop</div>
+            <p class="tagline">Local file sharing made simple</p>
+            <div class="status-badge">
+                <span class="status-dot"></span>
+                <span id="status-text">Ready</span>
+            </div>
+        </header>
+
+        <div class="upload-zone" id="upload-zone">
+            <span class="upload-icon">📤</span>
+            <p class="upload-text">Drop files here or click to browse</p>
+            <p class="upload-hint">Files will be available for download on this device</p>
+            <input type="file" class="upload-input" id="file-input" multiple>
+        </div>
+
+        <div class="section-title">Received Files</div>
+
+        <div class="files-grid" id="files-grid">
+            <div class="loading">
+                <div class="spinner"></div>
+            </div>
+        </div>
+
+        <div class="empty-state" id="empty-state" style="display: none;">
+            <div class="empty-state-icon">📭</div>
+            <p>No files received yet</p>
+        </div>
+
+        <footer>
+            <p>PyDrop — No internet required</p>
+        </footer>
+    </div>
+
+    <script>
+        const uploadZone = document.getElementById('upload-zone');
+        const fileInput = document.getElementById('file-input');
+        const filesGrid = document.getElementById('files-grid');
+        const emptyState = document.getElementById('empty-state');
+        const statusText = document.getElementById('status-text');
+
+        let files = [];
+
+        uploadZone.addEventListener('click', () => fileInput.click());
+
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', () => {
+            handleFiles(fileInput.files);
+        });
+
+        async function handleFiles(fileList) {
+            statusText.textContent = 'Uploading...';
+            
+            for (const file of fileList) {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                try {
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        console.log('File uploaded:', result);
+                    }
+                } catch (error) {
+                    console.error('Upload failed:', error);
+                }
+            }
+
+            statusText.textContent = 'Ready';
+            loadFiles();
+        }
+
+        async function loadFiles() {
+            try {
+                const response = await fetch('/api/files');
+                const data = await response.json();
+                files = data.files || [];
+                renderFiles();
+            } catch (error) {
+                console.error('Failed to load files:', error);
+            }
+        }
+
+        function renderFiles() {
+            if (files.length === 0) {
+                filesGrid.style.display = 'none';
+                emptyState.style.display = 'block';
+                return;
+            }
+
+            filesGrid.style.display = 'grid';
+            emptyState.style.display = 'none';
+
+            filesGrid.innerHTML = files.map(file => `
+                <div class="file-card" onclick="downloadFile('${file.id}', '${file.name}')">
+                    <div class="file-thumb" data-file-id="${file.id}">
+                        ${getFileIcon(file.name)}
+                    </div>
+                    <div class="file-name" title="${file.name}">${file.name}</div>
+                    <div class="file-size">${formatSize(file.size)}</div>
+                    <div class="file-time">${formatTime(file.time)}</div>
+                </div>
+            `).join('');
+
+            // Lazy load thumbnails
+            files.forEach(file => {
+                if (isImageFile(file.name)) {
+                    loadThumbnail(file.id);
+                }
+            });
+        }
+
+        function getFileIcon(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const icons = {
+                'pdf': '📕',
+                'doc': '📘', 'docx': '📘',
+                'xls': '📗', 'xlsx': '📗',
+                'ppt': '📙', 'pptx': '📙',
+                'zip': '📦', 'rar': '📦', '7z': '📦',
+                'mp3': '🎵', 'wav': '🎵', 'flac': '🎵',
+                'mp4': '🎬', 'avi': '🎬', 'mkv': '🎬',
+                'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️', 'webp': '🖼️',
+                'txt': '📝',
+                'py': '🐍', 'js': '💻', 'html': '🌐', 'css': '🎨'
+            };
+            return icons[ext] || '📄';
+        }
+
+        function isImageFile(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
+        }
+
+        async function loadThumbnail(fileId) {
+            const thumbContainer = document.querySelector(`[data-file-id="${fileId}"]`);
+            if (!thumbContainer) return;
+
+            try {
+                const response = await fetch(`/api/thumb?id=${fileId}`);
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    const img = document.createElement('img');
+                    img.src = url;
+                    img.onload = () => img.classList.add('loaded');
+                    thumbContainer.innerHTML = '';
+                    thumbContainer.appendChild(img);
+                }
+            } catch (error) {
+                console.error('Failed to load thumbnail:', error);
+            }
+        }
+
+        function downloadFile(fileId, filename) {
+            window.location.href = `/api/download?id=${fileId}`;
+        }
+
+        function formatSize(bytes) {
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let size = bytes;
+            let unitIndex = 0;
+            while (size >= 1024 && unitIndex < units.length - 1) {
+                size /= 1024;
+                unitIndex++;
+            }
+            return `${size.toFixed(1)} ${units[unitIndex]}`;
+        }
+
+        function formatTime(isoString) {
+            if (!isoString) return '';
+            const date = new Date(isoString);
+            const now = new Date();
+            const diff = now - date;
+            
+            if (diff < 60000) return 'Just now';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+            return date.toLocaleDateString();
+        }
+
+        // Initial load
+        loadFiles();
+        
+        // Auto refresh every 10 seconds
+        setInterval(loadFiles, 10000);
+    </script>
+</body>
+</html>

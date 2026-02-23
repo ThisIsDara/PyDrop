@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="8dp"
+    app:cardBackgroundColor="#12121a"
+    app:cardCornerRadius="8dp"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="12dp"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/tvDeviceName"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Device Name"
+            android:textColor="#ffffff"
+            android:textSize="14sp"/>
+
+        <TextView
+            android:id="@+id/tvDeviceIp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="192.168.1.x"
+            android:textColor="#6a6a7a"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginEnd="8dp"/>
+
+        <Button
+            android:id="@+id/btnSendToDevice"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="Send"
+            android:textSize="12sp"
+            android:backgroundTint="#00d4aa"
+            android:textColor="#0a0a0f"/>
+
+    </LinearLayout>
+</androidx.cardview.widget.CardView>

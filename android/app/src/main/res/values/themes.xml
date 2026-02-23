@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PyDrop" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#00d4aa</item>
+        <item name="colorPrimaryContainer">#12121a</item>
+        <item name="colorSecondary">#ff6b35</item>
+        <item name="android:statusBarColor">#0a0a0f</item>
+        <item name="android:navigationBarColor">#0a0a0f</item>
+        <item name="android:windowBackground">#0a0a0f</item>
+    </style>
+</resources>

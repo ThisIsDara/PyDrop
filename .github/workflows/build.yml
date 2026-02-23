@@ -1,0 +1,101 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build exe
+        run: |
+          pyinstaller --onefile --name PyDrop --add-data "public;public" `
+            --hidden-import=zeroconf `
+            --hidden-import=websockets `
+            --hidden-import=aiohttp `
+            --hidden-import=PIL `
+            --hidden-import=qrcode `
+            --hidden-import=customtkinter `
+            pydrop.py
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyDrop-exe
+          path: dist/PyDrop.exe
+
+  build-apk:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+
+      - name: Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+
+      - name: Build APK with Gradle
+        working-directory: android
+        run: |
+          gradle wrapper --gradle-version=8.2
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyDrop-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  release:
+    needs: [build-exe, build-apk]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Download exe
+        uses: actions/download-artifact@v4
+        with:
+          name: PyDrop-exe
+
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: PyDrop-apk
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            PyDrop.exe
+            app-debug.apk
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
