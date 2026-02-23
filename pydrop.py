@@ -1,75 +1,82 @@
 import asyncio
-import json
 import os
 import socket
 import threading
 import uuid
 import mimetypes
+import tkinter as tk
+from tkinter import filedialog, messagebox
 from pathlib import Path
 from datetime import datetime
-
-import qrcode
-from PIL import Image
-import io
-from websockets.asyncio.server import serve
-from aiohttp import web
-import customtkinter as ctk
-from tkinter import filedialog, messagebox
 import urllib.request
+import io
+
+from aiohttp import web
 
 
-COLORS = {
-    'bg': '#0a0a0f',
-    'panel': '#12121a',
-    'accent': '#00d4aa',
-    'secondary': '#ff6b35',
-    'danger': '#ff3366',
-    'text': '#ffffff',
-    'text_dim': '#6a6a7a',
-    'border': '#2a2a3a',
+# ─────────────────────────────────────────────────────────────────────────────
+#  Design tokens — industrial amber-on-charcoal terminal aesthetic
+# ─────────────────────────────────────────────────────────────────────────────
+C = {
+    'bg':          '#1a1a1a',
+    'surface':     '#242424',
+    'surface2':    '#2e2e2e',
+    'border':      '#383838',
+    'border_hi':   '#505050',
+    'amber':       '#f59e0b',
+    'amber_dim':   '#7a4f05',
+    'amber_glow':  '#fbbf24',
+    'green':       '#22c55e',
+    'red':         '#ef4444',
+    'text':        '#e5e5e5',
+    'text_dim':    '#737373',
+    'text_faint':  '#404040',
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Data model
+# ─────────────────────────────────────────────────────────────────────────────
 class Device:
-    def __init__(self, name: str, address: str, port: int, http_port: int, device_id: str):
-        self.name = name
-        self.address = address
-        self.port = port
-        self.http_port = http_port
-        self.device_id = device_id
-        self.last_seen = datetime.now()
+    def __init__(self, name: str, address: str, http_port: int, device_id: str):
+        self.name       = name
+        self.address    = address
+        self.http_port  = http_port
+        self.device_id  = device_id
+        self.last_seen  = datetime.now()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  UDP discovery — matches Android side protocol exactly
+# ─────────────────────────────────────────────────────────────────────────────
 class UDPDiscovery:
-    """UDP-based device discovery — single shared port, filter by device ID."""
-    # Both sides listen AND broadcast on the same port so cross-platform packets arrive
     DISCOVERY_PORT = 8766
 
-    def __init__(self, device_id: str, device_name: str, http_port: int, on_device_found):
-        self.device_id = device_id
-        self.device_name = device_name
-        self.http_port = http_port
+    def __init__(self, device_id, device_name, http_port, on_device_found):
+        self.device_id       = device_id
+        self.device_name     = device_name
+        self.http_port       = http_port
         self.on_device_found = on_device_found
-        self.running = False
-        self.sock = None
+        self.running         = False
+        self._sock           = None
 
     def start(self):
         self.running = True
-        threading.Thread(target=self._listen_loop, daemon=True).start()
-        threading.Thread(target=self._broadcast_loop, daemon=True).start()
+        threading.Thread(target=self._listen,    daemon=True).start()
+        threading.Thread(target=self._broadcast, daemon=True).start()
 
-    def _listen_loop(self):
+    def _listen(self):
         try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            self.sock.settimeout(2)
-            self.sock.bind(('', self.DISCOVERY_PORT))
-
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            s.settimeout(2)
+            s.bind(('', self.DISCOVERY_PORT))
+            self._sock = s
             while self.running:
                 try:
-                    data, addr = self.sock.recvfrom(1024)
-                    self._handle_message(data, addr[0])
+                    data, addr = s.recvfrom(1024)
+                    self._handle(data, addr[0])
                 except socket.timeout:
                     continue
                 except Exception:
@@ -77,9 +84,9 @@ class UDPDiscovery:
                         continue
                     break
         except Exception as e:
-            print(f"UDP listen error: {e}")
+            print(f"[UDP] listen error: {e}")
 
-    def _broadcast_loop(self):
+    def _broadcast(self):
         msg = f"PYDROP_ANNOUNCE|{self.device_id}|{self.device_name}|{self.http_port}".encode()
         while self.running:
             try:
@@ -90,7 +97,7 @@ class UDPDiscovery:
                 pass
             threading.Event().wait(3)
 
-    def _handle_message(self, data: bytes, addr: str):
+    def _handle(self, data: bytes, addr: str):
         try:
             msg = data.decode().strip()
             if not msg.startswith("PYDROP_ANNOUNCE"):
@@ -98,634 +105,617 @@ class UDPDiscovery:
             parts = msg.split("|")
             if len(parts) < 4:
                 return
-            remote_id = parts[1]
-            # Filter own packets by device ID — reliable across NAT/loopback
-            if remote_id == self.device_id:
-                return
-            device = Device(parts[2], addr, self.DISCOVERY_PORT, int(parts[3]), remote_id)
+            if parts[1] == self.device_id:
+                return  # own packet
+            device = Device(parts[2], addr, int(parts[3]), parts[1])
             self.on_device_found(device)
         except Exception:
             pass
 
     def stop(self):
         self.running = False
-        if self.sock:
-            self.sock.close()
+        if self._sock:
+            self._sock.close()
 
 
-class PyDropServer:
-    def __init__(self, device_name: str = None):
-        self.device_name = device_name or socket.gethostname()
-        self.device_id = uuid.uuid4().hex[:12]
-        self.port = 8765
-        self.http_port = 8080
-        self.discovery_port = 8766
-        
-        self.devices: dict[str, Device] = {}
-        self.received_files: dict[str, dict] = {}
-        self.sent_files: dict[str, dict] = {}
-        
-        self.running = False
-        self.udp_discovery = None
-        
-        self.gui_callback = None
-        
-    def set_gui_callback(self, callback):
-        self.gui_callback = callback
-        
-    def get_local_ip(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(('10.255.255.255', 1))
-            ip = s.getsockname()[0]
-        except Exception:
-            ip = '127.0.0.1'
-        finally:
-            s.close()
-        return ip
-    
+# ─────────────────────────────────────────────────────────────────────────────
+#  HTTP file receiver — POST /api/upload (aiohttp multipart)
+# ─────────────────────────────────────────────────────────────────────────────
+class FileReceiver:
+    def __init__(self, http_port, on_file_received, get_save_dir):
+        self.http_port        = http_port
+        self.on_file_received = on_file_received
+        self.get_save_dir     = get_save_dir
+        self.running          = False
+
     def start(self):
         self.running = True
-        # Start UDP discovery (faster than mDNS)
-        self.udp_discovery = UDPDiscovery(
-            self.device_id, 
-            self.device_name, 
-            self.http_port,
-            self._on_device_found
-        )
-        self.udp_discovery.start()
-        threading.Thread(target=self._start_http_server, daemon=True).start()
-        threading.Thread(target=self._run_ws_loop, daemon=True).start()
-        
-    def _on_device_found(self, device: Device):
-        if device.device_id not in self.devices:
-            self.devices[device.device_id] = device
-            if self.gui_callback:
-                self.gui_callback('device_found', {
-                    'id': device.device_id,
-                    'name': device.name,
-                    'address': device.address,
-                    'http_port': device.http_port
-                })
-        
-    def _run_ws_loop(self):
-        asyncio.run(self._start_websocket())
-        
-    def _start_http_server(self):
-        asyncio.run(self._run_http_server())
-        
-    async def _run_http_server(self):
+        threading.Thread(target=lambda: asyncio.run(self._serve()), daemon=True).start()
+
+    async def _serve(self):
         app = web.Application()
-        app.router.add_get('/', self.handle_index)
-        app.router.add_get('/api/files', self.handle_list_files)
-        app.router.add_get('/api/download', self.handle_download)
-        app.router.add_post('/api/upload', self.handle_upload)
-        app.router.add_get('/api/qr', self.handle_qr)
-        app.router.add_get('/api/thumb', self.handle_thumb)
-        app.router.add_get('/api/info', self.handle_info)
-        
+        app.router.add_post('/api/upload', self._handle_upload)
+        app.router.add_get('/api/info',    self._handle_info)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', self.http_port)
         await site.start()
-        print(f"HTTP server started on port {self.http_port}")
-        
         while self.running:
             await asyncio.sleep(1)
-            
-    async def handle_index(self, request):
-        index_path = Path(__file__).parent / 'public' / 'index.html'
-        if index_path.exists():
-            return web.FileResponse(index_path)
-        return web.Response(text='<!html><html><body><h1>PyDrop</h1></body></html>', content_type='text/html')
-        
-    async def handle_info(self, request):
-        return web.json_response({
-            'deviceId': self.device_id,
-            'deviceName': self.device_name,
-            'ip': self.get_local_ip(),
-            'httpPort': self.http_port
-        })
-        
-    async def handle_list_files(self, request):
-        files = []
-        for fid, info in self.received_files.items():
-            files.append({
-                'id': fid,
-                'name': info['name'],
-                'size': info['size'],
-                'time': info['time'],
-                'direction': 'received'
-            })
-        for fid, info in self.sent_files.items():
-            files.append({
-                'id': fid,
-                'name': info['name'],
-                'size': info['size'],
-                'time': info['time'],
-                'direction': 'sent'
-            })
-        return web.json_response({'files': sorted(files, key=lambda x: x['time'], reverse=True)})
-        
-    async def handle_download(self, request):
-        file_id = request.query.get('id')
-        if file_id in self.received_files:
-            info = self.received_files[file_id]
-            filepath = Path(info['path'])
-            if filepath.exists():
-                return web.FileResponse(filepath, headers={'Content-Disposition': f'attachment; filename="{info["name"]}"'})
-        return web.Response(text='Not found', status=404)
-        
-    async def handle_upload(self, request):
-        reader = await request.multipart()
-        field = await reader.next()
-        if field:
-            filename = field.filename
+
+    async def _handle_info(self, _request):
+        return web.json_response({'status': 'ok'})
+
+    async def _handle_upload(self, request):
+        try:
+            reader = await request.multipart()
+            field  = await reader.next()
+            if not field:
+                return web.Response(text='No file', status=400)
+
+            filename = field.filename or f"file_{int(datetime.now().timestamp())}"
+            save_dir = Path(self.get_save_dir())
+            save_dir.mkdir(parents=True, exist_ok=True)
+
             file_id = uuid.uuid4().hex[:8]
-            save_dir = Path(__file__).parent / 'received'
-            save_dir.mkdir(exist_ok=True)
-            filepath = save_dir / f"{file_id}_{filename}"
-            
+            dest    = save_dir / filename
+            if dest.exists():
+                dest = save_dir / f"{dest.stem}_{file_id}{dest.suffix}"
+
             size = 0
-            with open(filepath, 'wb') as f:
+            with open(dest, 'wb') as f:
                 while True:
-                    chunk = await field.read_chunk(8192)
+                    chunk = await field.read_chunk(65536)
                     if not chunk:
                         break
                     f.write(chunk)
                     size += len(chunk)
-            
-            self.received_files[file_id] = {
+
+            self.on_file_received({
+                'id':   file_id,
                 'name': filename,
                 'size': size,
-                'time': datetime.now().isoformat(),
-                'path': str(filepath)
-            }
-            
-            if self.gui_callback:
-                self.gui_callback('file_received', {
-                    'name': filename,
-                    'size': size,
-                    'id': file_id
-                })
-            
+                'path': str(dest),
+            })
             return web.json_response({'success': True, 'fileId': file_id})
-        return web.Response(text='No file', status=400)
-        
-    async def handle_qr(self, request):
-        local_ip = self.get_local_ip()
-        qr_data = f"pydrop://{local_ip}:{self.http_port}/{self.device_id}"
-        
-        qr = qrcode.QRCode(box_size=10, border=2)
-        qr.add_data(qr_data)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color='#00d4aa', back_color='#0a0a0f')
-        
-        buffer = io.BytesIO()
-        img.save(buffer, 'PNG')
-        buffer.seek(0)
-        
-        return web.Response(body=buffer.getvalue(), content_type='image/png')
-        
-    async def handle_thumb(self, request):
-        file_id = request.query.get('id')
-        if file_id in self.received_files:
-            info = self.received_files[file_id]
-            filepath = Path(info['path'])
-            if filepath.exists():
-                mime, _ = mimetypes.guess_type(str(filepath))
-                if mime and mime.startswith('image/'):
-                    try:
-                        img = Image.open(filepath)
-                        img.thumbnail((200, 200))
-                        buffer = io.BytesIO()
-                        img.save(buffer, 'PNG')
-                        return web.Response(body=buffer.getvalue(), content_type='image/png')
-                    except:
-                        pass
-        return web.Response(text='', status=404)
-        
-    async def _start_websocket(self):
-        async def handler(ws):
-            try:
-                async for msg in ws:
-                    if isinstance(msg, str):
-                        data = json.loads(msg)
-                        await self._handle_websocket_message(ws, data)
-            except Exception as e:
-                print(f"WebSocket error: {e}")
-                
-        self.websocket_server = await serve(handler, "0.0.0.0", self.port)
-        print(f"WebSocket server started on port {self.port}")
-        
-        while self.running:
-            await asyncio.sleep(1)
-            
-    async def _handle_websocket_message(self, ws, data):
-        msg_type = data.get('type')
-        
-        if msg_type == 'hello':
-            await ws.send(json.dumps({
-                'type': 'hello',
-                'deviceId': self.device_id,
-                'deviceName': self.device_name
-            }))
-            
-        elif msg_type == 'announce':
-            device = Device(
-                data.get('deviceName', 'Unknown'),
-                data.get('address', ''),
-                data.get('port', 0),
-                data.get('httpPort', 8080),
-                data.get('deviceId', '')
-            )
-            self.devices[device.device_id] = device
-            
-            if self.gui_callback:
-                self.gui_callback('device_found', {
-                    'id': device.device_id,
-                    'name': device.name,
-                    'address': device.address,
-                    'http_port': device.http_port
-                })
-                
-        elif msg_type == 'file_offer':
-            if self.gui_callback:
-                self.gui_callback('file_offer', data)
-                
-    def send_file_to_device(self, device: Device, file_path: str):
-        """Send a file to a remote device via HTTP multipart upload."""
-        try:
-            filename = os.path.basename(file_path)
-            mime_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
-            boundary = '----WebKitFormBoundary' + uuid.uuid4().hex
-
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
-
-            body = f'--{boundary}\r\n'.encode()
-            body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
-            body += f'Content-Type: {mime_type}\r\n\r\n'.encode()
-            body += file_data
-            body += f'\r\n--{boundary}--\r\n'.encode()
-
-            req = urllib.request.Request(
-                f"http://{device.address}:{device.http_port}/api/upload",
-                data=body,
-                method='POST',
-                headers={
-                    'Content-Type': f'multipart/form-data; boundary={boundary}',
-                    'Content-Length': str(len(body))
-                }
-            )
-            urllib.request.urlopen(req, timeout=60)
-
-            file_id = uuid.uuid4().hex[:8]
-            file_size = len(file_data)
-
-            self.sent_files[file_id] = {
-                'name': filename,
-                'size': file_size,
-                'time': datetime.now().isoformat(),
-                'to': device.name
-            }
-
-            if self.gui_callback:
-                self.gui_callback('file_sent', {
-                    'name': filename,
-                    'size': file_size,
-                    'to': device.name
-                })
-
-            return True
         except Exception as e:
-            print(f"Failed to send file: {e}")
-            return False
-            
+            print(f"[HTTP] upload error: {e}")
+            return web.Response(text=str(e), status=500)
+
     def stop(self):
         self.running = False
-        if self.udp_discovery:
-            self.udp_discovery.stop()
 
 
-class PyDropGUI:
+# ─────────────────────────────────────────────────────────────────────────────
+#  File sender (runs on background thread)
+# ─────────────────────────────────────────────────────────────────────────────
+def send_file(device: Device, file_path: str) -> bool:
+    try:
+        filename  = os.path.basename(file_path)
+        mime_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
+        boundary  = '----PyDropBoundary' + uuid.uuid4().hex
+
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+
+        body  = f'--{boundary}\r\n'.encode()
+        body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
+        body += f'Content-Type: {mime_type}\r\n\r\n'.encode()
+        body += file_data
+        body += f'\r\n--{boundary}--\r\n'.encode()
+
+        req = urllib.request.Request(
+            f"http://{device.address}:{device.http_port}/api/upload",
+            data=body, method='POST',
+            headers={
+                'Content-Type':   f'multipart/form-data; boundary={boundary}',
+                'Content-Length': str(len(body)),
+            }
+        )
+        urllib.request.urlopen(req, timeout=120)
+        return True
+    except Exception as e:
+        print(f"[SEND] error: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Utilities
+# ─────────────────────────────────────────────────────────────────────────────
+def get_local_ip() -> str:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('10.255.255.255', 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
+
+def fmt_size(b: int) -> str:
+    n: float = float(b)
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if n < 1024:
+            return f"{int(n)} {unit}" if unit == 'B' else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def truncate_path(path: str, max_len: int = 50) -> str:
+    if len(path) <= max_len:
+        return path
+    return '\u2026' + path[-(max_len - 1):]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  GUI — industrial amber terminal aesthetic
+# ─────────────────────────────────────────────────────────────────────────────
+class PyDropApp:
+    HTTP_PORT = 8080
+
     def __init__(self):
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("dark-blue")
-        
-        self.server = PyDropServer()
-        self.server.set_gui_callback(self._on_server_event)
-        
-        self.root = ctk.CTk()
-        self.root.title("⬡ PyDrop")
-        self.root.geometry("560x600")
+        self.device_id   = uuid.uuid4().hex[:12]
+        self.device_name = socket.gethostname()
+        self.local_ip    = get_local_ip()
+        self.save_dir    = str(Path.home() / 'Downloads' / 'PyDrop')
+        self.devices: dict[str, Device] = {}
+
+        # Backend
+        self.discovery = UDPDiscovery(
+            self.device_id, self.device_name, self.HTTP_PORT,
+            self._on_device_found
+        )
+        self.receiver = FileReceiver(
+            self.HTTP_PORT, self._on_file_received, lambda: self.save_dir
+        )
+
+        # Root window
+        self.root = tk.Tk()
+        self.root.title("PyDrop")
+        self.root.configure(bg=C['bg'])
         self.root.resizable(False, False)
-        
-        self._create_ui()
-        
-        threading.Thread(target=self.server.start, daemon=True).start()
-        
+        self.root.geometry("430x560")
+
+        # Fonts (Consolas ships with Windows — perfect monospace terminal feel)
+        self.f_title   = ('Consolas', 16, 'bold')
+        self.f_section = ('Consolas',  8, 'normal')
+        self.f_mono    = ('Consolas',  9, 'normal')
+        self.f_btn     = ('Consolas', 10, 'bold')
+        self.f_device  = ('Consolas', 11, 'bold')
+        self.f_ip      = ('Consolas',  9, 'normal')
+        self.f_status  = ('Consolas', 10, 'bold')
+
+        self._build_ui()
+        self._start_backend()
         self.root.mainloop()
-        
-    def _create_ui(self):
-        # Main container
-        main_frame = ctk.CTkFrame(self.root, fg_color=COLORS['bg'])
-        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Header
-        header = ctk.CTkFrame(main_frame, fg_color=COLORS['panel'], corner_radius=12)
-        header.pack(fill='x', pady=(0, 10))
-        
-        title = ctk.CTkLabel(header, text="⬡ PyDrop", font=ctk.CTkFont(size=24, weight="bold"),
-                            text_color=COLORS['accent'])
-        title.pack(side='left', padx=20, pady=15)
-        
-        self.status_indicator = ctk.CTkLabel(header, text="●", font=ctk.CTkFont(size=16),
-                                           text_color=COLORS['accent'])
-        self.status_indicator.pack(side='right', padx=20)
-        
-        # Device Info
-        info_frame = ctk.CTkFrame(main_frame, fg_color=COLORS['panel'], corner_radius=12)
-        info_frame.pack(fill='x', pady=(0, 10))
-        
-        local_ip = self.server.get_local_ip()
-        self.ip_label = ctk.CTkLabel(info_frame, text=f"IP: {local_ip}:{self.server.http_port}",
-                                    font=ctk.CTkFont(size=13, family="Consolas"),
-                                    text_color=COLORS['text'])
-        self.ip_label.pack(anchor='w', padx=20, pady=(12, 5))
-        
-        self.id_label = ctk.CTkLabel(info_frame, text=f"ID: {self.server.device_id}",
-                                    font=ctk.CTkFont(size=11, family="Consolas"),
-                                    text_color=COLORS['text_dim'])
-        self.id_label.pack(anchor='w', padx=20, pady=(0, 8))
-        
-        btn_row = ctk.CTkFrame(info_frame, fg_color='transparent')
-        btn_row.pack(fill='x', padx=15, pady=(0, 12))
-        
-        qr_btn = ctk.CTkButton(btn_row, text="📱 QR Code", fg_color=COLORS['bg'],
-                              hover_color=COLORS['accent'], command=self._show_qr)
-        qr_btn.pack(side='left', padx=5)
-        
-        web_btn = ctk.CTkButton(btn_row, text="🌐 Web UI", fg_color=COLORS['secondary'],
-                               hover_color='#ff8555', command=self._open_web_ui)
-        web_btn.pack(side='left', padx=5)
-        
-        refresh_btn = ctk.CTkButton(btn_row, text="🔄 Refresh", fg_color=COLORS['bg'],
-                                   hover_color=COLORS['accent'], command=self._refresh_devices)
-        refresh_btn.pack(side='left', padx=5)
-        
-        # Devices Section
-        devices_label = ctk.CTkLabel(main_frame, text="NEARBY DEVICES", font=ctk.CTkFont(size=11, weight="bold"),
-                                   text_color=COLORS['text_dim'])
-        devices_label.pack(anchor='w', padx=5, pady=(5, 8))
-        
-        self.devices_frame = ctk.CTkScrollableFrame(main_frame, fg_color='transparent',
-                                                     height=120, scrollbar_button_color=COLORS['panel'])
-        self.devices_frame.pack(fill='x', pady=(0, 10))
-        
-        # No devices placeholder
-        self.no_devices_label = ctk.CTkLabel(self.devices_frame, text="🔍 Scanning for devices...",
-                                            text_color=COLORS['text_dim'])
-        self.no_devices_label.pack(pady=20)
-        
-        # Received Files Section
-        files_label = ctk.CTkLabel(main_frame, text="FILES", font=ctk.CTkFont(size=11, weight="bold"),
-                                  text_color=COLORS['text_dim'])
-        files_label.pack(anchor='w', padx=5, pady=(5, 8))
-        
-        self.files_frame = ctk.CTkScrollableFrame(main_frame, fg_color='transparent',
-                                                  height=180, scrollbar_button_color=COLORS['panel'])
-        self.files_frame.pack(fill='both', expand=True, pady=(0, 10))
-        
-        self.no_files_label = ctk.CTkLabel(self.files_frame, text="No files received yet",
-                                          text_color=COLORS['text_dim'])
-        self.no_files_label.pack(pady=20)
-        
-        # Bottom Buttons
-        btn_frame = ctk.CTkFrame(main_frame, fg_color='transparent')
-        btn_frame.pack(fill='x', pady=(0, 0))
-        
-        send_btn = ctk.CTkButton(btn_frame, text="📤 SEND FILES", fg_color=COLORS['accent'],
-                                 hover_color='#00b894', height=40,
-                                 font=ctk.CTkFont(size=14, weight="bold"),
-                                 command=self._send_files)
-        send_btn.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        
-        receive_btn = ctk.CTkButton(btn_frame, text="📥 RECEIVE", fg_color=COLORS['panel'],
-                                    border_color=COLORS['accent'], border_width=1,
-                                    hover_color=COLORS['accent'], height=40,
-                                    font=ctk.CTkFont(size=14, weight="bold"),
-                                    command=self._open_web_ui)
-        receive_btn.pack(side='right', fill='x', expand=True, padx=(5, 0))
-        
-    def _on_server_event(self, event_type: str, data: dict):
-        self.root.after(0, lambda: self._handle_event(event_type, data))
-        
-    def _handle_event(self, event_type: str, data: dict):
-        if event_type == 'device_found':
-            self._add_device(data)
-        elif event_type == 'file_received':
-            self._add_received_file(data)
-        elif event_type == 'file_sent':
-            self._add_sent_file(data)
-            
-    def _add_device(self, data: dict):
-        if hasattr(self, 'no_devices_label'):
-            self.no_devices_label.destroy()
-            
-        for widget in self.devices_frame.winfo_children():
-            if getattr(widget, 'device_id', None) == data['id']:
-                return
-                
-        device_frame = ctk.CTkFrame(self.devices_frame, fg_color=COLORS['panel'], corner_radius=8)
-        device_frame.pack(fill='x', pady=3, padx=5)
-        device_frame.device_id = data['id']
-        
-        status = ctk.CTkLabel(device_frame, text="●", font=ctk.CTkFont(size=10),
-                             text_color=COLORS['accent'])
-        status.pack(side='left', padx=(12, 5))
-        
-        name_label = ctk.CTkLabel(device_frame, text=data['name'],
-                                 font=ctk.CTkFont(size=13),
-                                 text_color=COLORS['text'])
-        name_label.pack(side='left', padx=5)
-        
-        ip_label = ctk.CTkLabel(device_frame, text=data['address'],
-                               font=ctk.CTkFont(size=10, family="Consolas"),
-                               text_color=COLORS['text_dim'])
-        ip_label.pack(side='left', padx=5)
-        
-    def _add_received_file(self, data: dict):
-        if hasattr(self, 'no_files_label'):
-            self.no_files_label.destroy()
-            
-        file_frame = ctk.CTkFrame(self.files_frame, fg_color=COLORS['panel'], corner_radius=8)
-        file_frame.pack(fill='x', pady=3, padx=5)
-        
-        icon_label = ctk.CTkLabel(file_frame, text="📄", font=ctk.CTkFont(size=16))
-        icon_label.pack(side='left', padx=(12, 8))
-        
-        info_frame = ctk.CTkFrame(file_frame, fg_color='transparent')
-        info_frame.pack(side='left', fill='x', expand=True, padx=5)
-        
-        name_label = ctk.CTkLabel(info_frame, text=data['name'],
-                                 font=ctk.CTkFont(size=12),
-                                 text_color=COLORS['text'])
-        name_label.pack(anchor='w')
-        
-        size_label = ctk.CTkLabel(info_frame, text=self._format_size(data['size']),
-                                 font=ctk.CTkFont(size=10, family="Consolas"),
-                                 text_color=COLORS['text_dim'])
-        size_label.pack(anchor='w')
-        
-    def _add_sent_file(self, data: dict):
-        if hasattr(self, 'no_files_label'):
-            self.no_files_label.destroy()
-            
-        file_frame = ctk.CTkFrame(self.files_frame, fg_color=COLORS['panel'], corner_radius=8)
-        file_frame.pack(fill='x', pady=3, padx=5)
-        
-        icon_label = ctk.CTkLabel(file_frame, text="📤", font=ctk.CTkFont(size=16))
-        icon_label.pack(side='left', padx=(12, 8))
-        
-        info_frame = ctk.CTkFrame(file_frame, fg_color='transparent')
-        info_frame.pack(side='left', fill='x', expand=True, padx=5)
-        
-        name_label = ctk.CTkLabel(info_frame, text=f"→ {data['name']}",
-                                 font=ctk.CTkFont(size=12),
-                                 text_color=COLORS['secondary'])
-        name_label.pack(anchor='w')
-        
-        to_label = ctk.CTkLabel(info_frame, text=f"To: {data['to']}",
-                               font=ctk.CTkFont(size=10, family="Consolas"),
-                               text_color=COLORS['text_dim'])
-        to_label.pack(anchor='w')
-        
-    def _show_qr(self):
-        qr_window = ctk.CTkToplevel(self.root)
-        qr_window.title("Scan to Connect")
-        qr_window.geometry("320x400")
-        qr_window.resizable(False, False)
-        
-        ctk.CTkLabel(qr_window, text="Scan to Connect", font=ctk.CTkFont(size=18, weight="bold"),
-                    text_color=COLORS['accent']).pack(pady=20)
-        
-        qr_canvas = ctk.CTkCanvas(qr_window, width=200, height=200, bg=COLORS['panel'], highlightthickness=0)
-        qr_canvas.pack(pady=10)
-        
-        try:
-            url = f"http://localhost:{self.server.http_port}/api/qr"
-            with urllib.request.urlopen(url, timeout=5) as response:
-                img_data = response.read()
-                from PIL import Image, ImageTk
-                img = Image.open(io.BytesIO(img_data))
-                self.qr_image = ImageTk.PhotoImage(img)
-                qr_canvas.create_image(100, 100, image=self.qr_image)
-        except:
-            qr_canvas.create_text(100, 100, text="QR Unavailable", fill=COLORS['text_dim'])
-            
-        ctk.CTkLabel(qr_window, text=f"IP: {self.server.get_local_ip()}",
-                    font=ctk.CTkFont(size=12, family="Consolas"),
-                    text_color=COLORS['text']).pack(pady=10)
-        
-        ctk.CTkLabel(qr_window, text=f"Device ID: {self.server.device_id}",
-                    font=ctk.CTkFont(size=10, family="Consolas"),
-                    text_color=COLORS['text_dim']).pack()
-        
-        ctk.CTkButton(qr_window, text="Close", fg_color=COLORS['panel'],
-                     command=qr_window.destroy).pack(pady=20)
-        
-    def _send_files(self):
-        files = filedialog.askopenfilenames(title="Select files to send")
-        if not files:
-            return
-            
-        if not self.server.devices:
-            messagebox.showinfo("No Devices", "No devices found nearby.\nMake sure other devices are running PyDrop.")
-            return
-            
-        select_window = ctk.CTkToplevel(self.root)
-        select_window.title("Select Device")
-        select_window.geometry("350x450")
-        
-        ctk.CTkLabel(select_window, text="Select device to send to:", font=ctk.CTkFont(size=14, weight="bold"),
-                    text_color=COLORS['text']).pack(pady=15)
-        
-        scroll = ctk.CTkScrollableFrame(select_window, fg_color='transparent')
-        scroll.pack(fill='both', expand=True, padx=20, pady=10)
-        
-        for dev_id, device in self.server.devices.items():
-            btn = ctk.CTkButton(scroll, text=f"{device.name}\n{device.address}",
-                              fg_color=COLORS['panel'], border_width=1, border_color=COLORS['accent'],
-                              command=lambda d=device: self._do_send(d, files, select_window))
-            btn.pack(fill='x', pady=5)
-            
-    def _do_send(self, device: Device, files: tuple, window):
-        success_count = 0
-        for f in files:
-            if self._upload_file(device, f):
-                success_count += 1
-                
-        messagebox.showinfo("Sent", f"Sent {success_count}/{len(files)} file(s) to {device.name}")
-        window.destroy()
-        
-    def _upload_file(self, device: Device, file_path: str) -> bool:
-        try:
-            import urllib.request
-            import mimetypes
-            
-            filename = os.path.basename(file_path)
-            mime_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
-            
-            boundary = '----WebKitFormBoundary' + uuid.uuid4().hex
-            
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
-            
-            body = f'--{boundary}\r\n'.encode()
-            body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
-            body += f'Content-Type: {mime_type}\r\n\r\n'.encode()
-            body += file_data
-            body += f'\r\n--{boundary}--\r\n'.encode()
-            
-            req = urllib.request.Request(
-                f"http://{device.address}:{device.http_port}/api/upload",
-                data=body,
-                method='POST',
-                headers={
-                    'Content-Type': f'multipart/form-data; boundary={boundary}',
-                    'Content-Length': str(len(body))
-                }
+
+    # ── Build UI ──────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        PAD = 14
+
+        # ── Title strip ───────────────────────────────────────────────────────
+        title_strip = tk.Frame(self.root, bg=C['surface'], height=52)
+        title_strip.pack(fill='x')
+        title_strip.pack_propagate(False)
+
+        tk.Label(
+            title_strip, text="PY", font=self.f_title,
+            bg=C['surface'], fg=C['amber']
+        ).pack(side='left', padx=(PAD, 0), pady=14)
+        tk.Label(
+            title_strip, text="DROP", font=self.f_title,
+            bg=C['surface'], fg=C['text']
+        ).pack(side='left', pady=14)
+
+        # IP + hostname right-aligned
+        tk.Label(
+            title_strip,
+            text=f"{self.device_name}  {self.local_ip}",
+            font=self.f_ip,
+            bg=C['surface'], fg=C['text_faint']
+        ).pack(side='right', padx=PAD)
+
+        # Amber hairline separator
+        tk.Frame(self.root, bg=C['amber'], height=2).pack(fill='x')
+
+        # ── Status bar ───────────────────────────────────────────────────────
+        status_bar = tk.Frame(self.root, bg=C['surface'], height=36)
+        status_bar.pack(fill='x')
+        status_bar.pack_propagate(False)
+
+        tk.Label(
+            status_bar, text="STATUS", font=self.f_section,
+            bg=C['surface'], fg=C['text_faint']
+        ).pack(side='left', padx=(PAD, 6), pady=10)
+
+        self._dot = tk.Label(
+            status_bar, text="\u25cf", font=('Consolas', 12),
+            bg=C['surface'], fg=C['text_faint']
+        )
+        self._dot.pack(side='left', pady=10)
+
+        self._status_lbl = tk.Label(
+            status_bar, text="STARTING\u2026", font=self.f_status,
+            bg=C['surface'], fg=C['text_dim']
+        )
+        self._status_lbl.pack(side='left', padx=(5, 0), pady=10)
+
+        # Thin separator
+        tk.Frame(self.root, bg=C['border'], height=1).pack(fill='x')
+
+        # ── Devices section ───────────────────────────────────────────────────
+        dev_hdr = tk.Frame(self.root, bg=C['bg'])
+        dev_hdr.pack(fill='x', padx=PAD, pady=(10, 6))
+
+        tk.Label(
+            dev_hdr, text="NEARBY DEVICES", font=self.f_section,
+            bg=C['bg'], fg=C['text_faint']
+        ).pack(side='left')
+
+        self._dev_count_lbl = tk.Label(
+            dev_hdr, text="0 found", font=self.f_section,
+            bg=C['bg'], fg=C['amber_dim']
+        )
+        self._dev_count_lbl.pack(side='right')
+
+        # Device list container (fixed height, scrollable via inner frame)
+        self._dev_list_outer = tk.Frame(
+            self.root, bg=C['bg'], height=200
+        )
+        self._dev_list_outer.pack(fill='x', padx=PAD)
+        self._dev_list_outer.pack_propagate(False)
+
+        self._dev_list = tk.Frame(self._dev_list_outer, bg=C['bg'])
+        self._dev_list.pack(fill='both', expand=True)
+
+        self._no_dev_lbl = tk.Label(
+            self._dev_list,
+            text="scanning the network\u2026",
+            font=self.f_mono, bg=C['bg'], fg=C['text_faint']
+        )
+        self._no_dev_lbl.pack(pady=40)
+
+        tk.Frame(self.root, bg=C['border'], height=1).pack(fill='x', pady=(8, 0))
+
+        # ── Action buttons ────────────────────────────────────────────────────
+        btn_row = tk.Frame(self.root, bg=C['bg'])
+        btn_row.pack(fill='x', padx=PAD, pady=12)
+
+        self._btn_send = self._btn(
+            btn_row, "SEND FILE", self._on_send,
+            fg=C['bg'], bg=C['amber'], hover=C['amber_glow']
+        )
+        self._btn_send.pack(side='left', fill='x', expand=True, padx=(0, 6))
+
+        self._btn_dir = self._btn(
+            btn_row, "SAVE DIR", self._on_choose_dir,
+            fg=C['text'], bg=C['surface2'], hover=C['border_hi']
+        )
+        self._btn_dir.pack(side='left', fill='x', expand=True, padx=(0, 6))
+
+        self._btn_exit = self._btn(
+            btn_row, "EXIT", self._on_exit,
+            fg=C['red'], bg=C['surface'], hover='#2e1a1a',
+            outline=C['red']
+        )
+        self._btn_exit.pack(side='left', fill='x', expand=True)
+
+        # Save dir path display
+        self._savedir_lbl = tk.Label(
+            self.root,
+            text=truncate_path(self.save_dir),
+            font=self.f_ip, bg=C['bg'], fg=C['text_faint'], anchor='w'
+        )
+        self._savedir_lbl.pack(fill='x', padx=PAD, pady=(0, 8))
+
+        # ── Received log ──────────────────────────────────────────────────────
+        log_hdr = tk.Frame(self.root, bg=C['bg'])
+        log_hdr.pack(fill='x', padx=PAD, pady=(0, 4))
+        tk.Label(
+            log_hdr, text="TRANSFER LOG", font=self.f_section,
+            bg=C['bg'], fg=C['text_faint']
+        ).pack(side='left')
+
+        log_frame = tk.Frame(
+            self.root,
+            bg=C['surface'],
+            highlightthickness=1,
+            highlightbackground=C['border']
+        )
+        log_frame.pack(fill='both', expand=True, padx=PAD, pady=(0, PAD))
+
+        self._log = tk.Text(
+            log_frame,
+            bg=C['surface'], fg=C['text_dim'],
+            font=self.f_mono,
+            relief='flat', bd=0,
+            state='disabled', wrap='none',
+            insertbackground=C['amber'],
+            selectbackground=C['amber_dim'],
+        )
+        self._log.pack(fill='both', expand=True, padx=8, pady=8)
+
+        # Tag colours for sent / received / error lines
+        self._log.tag_config('sent',     foreground=C['amber'])
+        self._log.tag_config('received', foreground=C['green'])
+        self._log.tag_config('err',      foreground=C['red'])
+        self._log.tag_config('info',     foreground=C['text_dim'])
+        self._log.tag_config('ts',       foreground=C['text_faint'])
+
+    # ── Button factory ────────────────────────────────────────────────────────
+    def _btn(self, parent, text, command, fg, bg, hover, outline=None):
+        outline = outline or bg
+        container = tk.Frame(
+            parent, bg=outline,
+            highlightthickness=1, highlightbackground=outline
+        )
+        b = tk.Button(
+            container, text=text, font=self.f_btn,
+            fg=fg, bg=bg,
+            activeforeground=fg, activebackground=hover,
+            relief='flat', bd=0, pady=10,
+            cursor='hand2', command=command
+        )
+        b.pack(fill='both', expand=True)
+        b.bind('<Enter>', lambda _: b.configure(bg=hover))
+        b.bind('<Leave>', lambda _: b.configure(bg=bg))
+        return container
+
+    # ── Status control ────────────────────────────────────────────────────────
+    def _set_status(self, ready: bool):
+        if ready:
+            self._dot.configure(fg=C['green'])
+            self._status_lbl.configure(text="READY", fg=C['green'])
+        else:
+            self._dot.configure(fg=C['red'])
+            self._status_lbl.configure(text="NOT READY", fg=C['red'])
+
+    # ── Backend startup ───────────────────────────────────────────────────────
+    def _start_backend(self):
+        def _run():
+            try:
+                self.receiver.start()
+                self.discovery.start()
+                self.root.after(0, lambda: self._set_status(True))
+                self.root.after(0, lambda: self._log_line(
+                    f"listening on {self.local_ip}:{self.HTTP_PORT}", 'info'
+                ))
+            except Exception as e:
+                self.root.after(0, lambda: self._set_status(False))
+                self.root.after(0, lambda: self._log_line(f"startup error: {e}", 'err'))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── Device discovery callback ─────────────────────────────────────────────
+    def _on_device_found(self, device: Device):
+        self.devices[device.device_id] = device
+        self.root.after(0, self._redraw_devices)
+
+    def _redraw_devices(self):
+        for w in self._dev_list.winfo_children():
+            w.destroy()
+
+        count = len(self.devices)
+        self._dev_count_lbl.configure(
+            text=f"{count} found" if count else "0 found"
+        )
+
+        if count == 0:
+            self._no_dev_lbl = tk.Label(
+                self._dev_list, text="scanning the network\u2026",
+                font=self.f_mono, bg=C['bg'], fg=C['text_faint']
             )
-            
-            urllib.request.urlopen(req, timeout=60)
-            return True
-        except Exception as e:
-            print(f"Upload failed: {e}")
-            return False
-        
-    def _open_web_ui(self):
-        import webbrowser
-        webbrowser.open(f"http://localhost:{self.server.http_port}")
-        
-    def _refresh_devices(self):
-        self.server.devices.clear()
-        for widget in self.devices_frame.winfo_children():
-            widget.destroy()
-        self.no_devices_label = ctk.CTkLabel(self.devices_frame, text="🔄 Rescanning...",
-                                            text_color=COLORS['text_dim'])
-        self.no_devices_label.pack(pady=20)
-        
-    def _format_size(self, size: int) -> str:
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024:
-                return f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{size:.1f} TB"
+            self._no_dev_lbl.pack(pady=40)
+            return
+
+        for dev in self.devices.values():
+            self._device_row(dev)
+
+    def _device_row(self, device: Device):
+        outer = tk.Frame(
+            self._dev_list, bg=C['surface2'],
+            highlightthickness=1, highlightbackground=C['border']
+        )
+        outer.pack(fill='x', pady=(0, 5))
+
+        # Left amber accent bar
+        tk.Frame(outer, bg=C['amber'], width=3).pack(side='left', fill='y')
+
+        body = tk.Frame(outer, bg=C['surface2'], padx=10, pady=8)
+        body.pack(side='left', fill='both', expand=True)
+
+        tk.Label(
+            body, text=device.name,
+            font=self.f_device, bg=C['surface2'], fg=C['text'], anchor='w'
+        ).pack(anchor='w')
+        tk.Label(
+            body, text=f"{device.address}:{device.http_port}",
+            font=self.f_ip, bg=C['surface2'], fg=C['text_dim'], anchor='w'
+        ).pack(anchor='w')
+
+        # Inline send button
+        side = tk.Frame(outer, bg=C['surface2'], padx=10)
+        side.pack(side='right', fill='y')
+
+        sb = tk.Button(
+            side, text="SEND \u2192",
+            font=('Consolas', 9, 'bold'),
+            fg=C['amber'], bg=C['surface2'],
+            activeforeground=C['bg'], activebackground=C['amber'],
+            relief='flat', bd=0, cursor='hand2',
+            command=lambda d=device: self._send_to(d)
+        )
+        sb.pack(expand=True)
+
+        # Hover effect across the whole row
+        def _on(_e=None):
+            outer.configure(highlightbackground=C['amber'])
+            sb.configure(fg=C['bg'], bg=C['amber'])
+
+        def _off(_e=None):
+            outer.configure(highlightbackground=C['border'])
+            sb.configure(fg=C['amber'], bg=C['surface2'])
+
+        for w in (outer, body, side, sb):
+            w.bind('<Enter>', _on)
+            w.bind('<Leave>', _off)
+
+    # ── File received callback ────────────────────────────────────────────────
+    def _on_file_received(self, info: dict):
+        line = f"\u2190 {info['name']}  [{fmt_size(info['size'])}]  {info['path']}"
+        self.root.after(0, lambda: self._log_line(line, 'received'))
+
+    # ── Log helpers ───────────────────────────────────────────────────────────
+    def _log_line(self, text: str, tag: str = 'info'):
+        self._log.configure(state='normal')
+        ts = datetime.now().strftime('%H:%M:%S')
+        self._log.insert('end', f"[{ts}]  ", 'ts')
+        self._log.insert('end', f"{text}\n", tag)
+        self._log.see('end')
+        self._log.configure(state='disabled')
+
+    # ── Button: SEND FILE ─────────────────────────────────────────────────────
+    def _on_send(self):
+        if not self.devices:
+            messagebox.showinfo(
+                "No Devices Found",
+                "No PyDrop devices detected on the network.\n"
+                "Make sure the other device is running PyDrop.",
+                parent=self.root
+            )
+            return
+
+        paths = filedialog.askopenfilenames(
+            title="Select files to send", parent=self.root
+        )
+        if not paths:
+            return
+
+        if len(self.devices) == 1:
+            self._send_to(next(iter(self.devices.values())), paths)
+        else:
+            self._device_picker(paths)
+
+    def _send_to(self, device: Device, paths=None):
+        if paths is None:
+            paths = filedialog.askopenfilenames(
+                title="Select files to send", parent=self.root
+            )
+        if not paths:
+            return
+
+        def _worker():
+            ok = err = 0
+            total = len(paths)
+            for p in paths:
+                fname = os.path.basename(p)
+                sz    = os.path.getsize(p)
+                self.root.after(0, lambda f=fname, s=sz, d=device: self._log_line(
+                    f"\u2192 {f}  [{fmt_size(s)}]  \u2192 {d.name} ({d.address})", 'sent'
+                ))
+                if send_file(device, p):
+                    ok += 1
+                else:
+                    err += 1
+                    self.root.after(0, lambda f=fname: self._log_line(
+                        f"  FAILED: {f}", 'err'
+                    ))
+
+            self.root.after(0, lambda: self._log_line(
+                f"  {ok}/{total} sent", 'info'
+            ))
+            if err:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Send Error", f"{err} file(s) failed. See transfer log.",
+                    parent=self.root
+                ))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _device_picker(self, paths):
+        win = tk.Toplevel(self.root)
+        win.title("Select Device")
+        win.configure(bg=C['bg'])
+        win.resizable(False, False)
+        win.grab_set()
+        win.geometry("320x{}".format(60 + len(self.devices) * 72 + 50))
+
+        tk.Frame(win, bg=C['amber'], height=2).pack(fill='x')
+        tk.Label(
+            win, text="SELECT TARGET DEVICE",
+            font=self.f_section, bg=C['bg'], fg=C['text_faint']
+        ).pack(padx=14, pady=(12, 8), anchor='w')
+
+        for dev in self.devices.values():
+            outer = tk.Frame(
+                win, bg=C['surface2'],
+                highlightthickness=1, highlightbackground=C['border']
+            )
+            outer.pack(fill='x', padx=14, pady=(0, 6))
+
+            tk.Frame(outer, bg=C['amber'], width=3).pack(side='left', fill='y')
+
+            inner = tk.Frame(outer, bg=C['surface2'], padx=10, pady=10)
+            inner.pack(side='left', fill='both', expand=True)
+
+            tk.Label(
+                inner, text=dev.name,
+                font=self.f_device, bg=C['surface2'], fg=C['text']
+            ).pack(anchor='w')
+            tk.Label(
+                inner, text=f"{dev.address}:{dev.http_port}",
+                font=self.f_ip, bg=C['surface2'], fg=C['text_dim']
+            ).pack(anchor='w')
+
+            def _click(d=dev):
+                win.destroy()
+                self._send_to(d, paths)
+
+            def _on(e, ro=outer, ri=inner):
+                ro.configure(highlightbackground=C['amber'])
+                ri.configure(bg=C['border_hi'])
+
+            def _off(e, ro=outer, ri=inner):
+                ro.configure(highlightbackground=C['border'])
+                ri.configure(bg=C['surface2'])
+
+            for w in (outer, inner):
+                w.bind('<Button-1>', lambda e, fn=_click: fn())
+                w.bind('<Enter>', _on)
+                w.bind('<Leave>', _off)
+
+        tk.Button(
+            win, text="CANCEL", font=self.f_btn,
+            fg=C['text_faint'], bg=C['bg'],
+            activeforeground=C['text'], activebackground=C['surface'],
+            relief='flat', bd=0, pady=8, cursor='hand2',
+            command=win.destroy
+        ).pack(fill='x', padx=14, pady=(2, 12))
+
+    # ── Button: SAVE DIR ──────────────────────────────────────────────────────
+    def _on_choose_dir(self):
+        chosen = filedialog.askdirectory(
+            title="Choose folder for received files",
+            initialdir=self.save_dir, parent=self.root
+        )
+        if chosen:
+            self.save_dir = chosen
+            self._savedir_lbl.configure(text=truncate_path(chosen))
+            self._log_line(f"save dir \u2192 {chosen}", 'info')
+
+    # ── Button: EXIT ──────────────────────────────────────────────────────────
+    def _on_exit(self):
+        self.discovery.stop()
+        self.receiver.stop()
+        self.root.destroy()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Entry point
+# ─────────────────────────────────────────────────────────────────────────────
 def main():
-    app = PyDropGUI()
+    PyDropApp()
 
 
 if __name__ == "__main__":
