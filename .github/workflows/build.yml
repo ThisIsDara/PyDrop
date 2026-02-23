@@ -28,7 +28,6 @@ jobs:
       - name: Build exe
         run: |
           pyinstaller --onefile --name PyDrop --add-data "public;public" `
-            --hidden-import=zeroconf `
             --hidden-import=websockets `
             --hidden-import=aiohttp `
             --hidden-import=PIL `

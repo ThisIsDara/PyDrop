@@ -1,10 +1,10 @@
 package com.pydrop.app
 
 import android.util.Log
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
-import javax.jmdns.JmDNS
-import javax.jmdns.ServiceEvent
-import javax.jmdns.ServiceListener
+import kotlinx.coroutines.*
 
 class PyDropmDNS(
     private val deviceName: String,
@@ -14,75 +14,118 @@ class PyDropmDNS(
     private val onDeviceFound: (Device) -> Unit
 ) {
 
-    private var jmdns: JmDNS? = null
-    private val serviceType = "_pydrop._tcp.local."
+    private var socket: DatagramSocket? = null
+    private var isRunning = false
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    companion object {
+        private const val TAG = "PyDropmDNS"
+        private const val DISCOVERY_PORT = 8766
+        private const val BROADCAST_PORT = 8767
+        private const val MESSAGE_ANNOUNCE = "PYDROP_ANNOUNCE"
+        private const val MESSAGE_DISCOVER = "PYDROP_DISCOVER"
+    }
 
     fun start() {
+        isRunning = true
+        
+        // Start listening for discovery packets
+        scope.launch {
+            listenForDevices()
+        }
+        
+        // Broadcast our presence
+        scope.launch {
+            broadcastPresence()
+        }
+    }
+
+    private suspend fun listenForDevices() {
         try {
-            val addr = InetAddress.getLocalHost()
-            jmdns = JmDNS.create(addr, deviceName)
+            socket = DatagramSocket(DISCOVERY_PORT)
+            socket?.soTimeout = 5000
             
-            // Register our service
-            val info = javax.jmdns.ServiceInfo(
-                serviceType,
-                "$deviceName.$serviceType",
-                httpPort,
-                0,
-                0,
-                mapOf(
-                    "deviceId" to deviceId,
-                    "deviceName" to deviceName,
-                    "httpPort" to httpPort.toString()
-                )
-            )
-            jmdns?.registerService(info)
-            
-            // Add listener for discovering other devices
-            jmdns?.addServiceListener(serviceType, object : ServiceListener {
-                override fun serviceAdded(event: ServiceEvent) {
-                    Log.d("PyDropmDNS", "Service added: ${event.name}")
-                }
-                
-                override fun serviceRemoved(event: ServiceEvent) {
-                    Log.d("PyDropmDNS", "Service removed: ${event.name}")
-                }
-                
-                override fun serviceResolved(event: ServiceEvent) {
-                    val info = event.info
-                    val props = info.properties
+            while (isRunning) {
+                try {
+                    val buffer = ByteArray(1024)
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket?.receive(packet)
                     
-                    val foundId = String(props?.get("deviceId") ?: ByteArray(0))
-                    if (foundId != deviceId && foundId.isNotEmpty()) {
-                        val name = String(props?.get("deviceName") ?: ByteArray(0)).ifEmpty { event.name }
-                        val port = String(props?.get("httpPort") ?: "8080".toByteArray()).toIntOrNull() ?: 8080
-                        
-                        val address = info.inetAddresses.firstOrNull()?.hostAddress ?: return
-                        
-                        val device = Device(foundId, name, address, port)
-                        onDeviceFound(device)
-                        Log.d("PyDropmDNS", "Device found: $name at $address:$port")
+                    val message = String(packet.data, 0, packet.length)
+                    val senderIp = packet.address.hostAddress
+                    
+                    if (senderIp != localIp && message.startsWith(MESSAGE_ANNOUNCE)) {
+                        val parts = message.split("|")
+                        if (parts.size >= 4) {
+                            val remoteId = parts[1]
+                            val remoteName = parts[2]
+                            val remotePort = parts[3].toIntOrNull() ?: 8080
+                            
+                            if (remoteId != deviceId) {
+                                val device = Device(remoteId, remoteName, senderIp, remotePort)
+                                onDeviceFound(device)
+                                Log.d(TAG, "Found device: $remoteName at $senderIp")
+                            }
+                        }
                     }
+                } catch (e: Exception) {
+                    // Timeout or error, continue
                 }
-            })
-            
-            Log.d("PyDropmDNS", "mDNS started, service registered")
+            }
         } catch (e: Exception) {
-            Log.e("PyDropmDNS", "Failed to start mDNS", e)
+            Log.e(TAG, "Error listening", e)
+        }
+    }
+
+    private suspend fun broadcastPresence() {
+        while (isRunning) {
+            try {
+                val message = "$MESSAGE_ANNOUNCE|$deviceId|$deviceName|$httpPort"
+                val buffer = message.toByteArray()
+                
+                // Broadcast to local network
+                val address = InetAddress.getByName("255.255.255.255")
+                val packet = DatagramPacket(buffer, buffer.size, address, BROADCAST_PORT)
+                
+                val sendSocket = DatagramSocket()
+                sendSocket.broadcast = true
+                sendSocket.send(packet)
+                sendSocket.close()
+                
+                Log.d(TAG, "Broadcast presence: $deviceName")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error broadcasting", e)
+            }
+            
+            delay(5000) // Broadcast every 5 seconds
         }
     }
 
     fun discover() {
-        // Re-query for services
-        jmdns?.list(serviceType)
+        // Send discovery request
+        scope.launch {
+            try {
+                val message = "$MESSAGE_DISCOVER|$deviceId"
+                val buffer = message.toByteArray()
+                
+                val address = InetAddress.getByName("255.255.255.255")
+                val packet = DatagramPacket(buffer, buffer.size, address, BROADCAST_PORT)
+                
+                val sendSocket = DatagramSocket()
+                sendSocket.broadcast = true
+                sendSocket.send(packet)
+                sendSocket.close()
+                
+                Log.d(TAG, "Sent discovery request")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending discovery", e)
+            }
+        }
     }
 
     fun stop() {
-        try {
-            jmdns?.unregisterAllServices()
-            jmdns?.close()
-            jmdns = null
-        } catch (e: Exception) {
-            Log.e("PyDropmDNS", "Error stopping mDNS", e)
-        }
+        isRunning = false
+        socket?.close()
+        scope.cancel()
     }
 }

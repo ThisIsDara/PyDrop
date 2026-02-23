@@ -8,8 +8,6 @@ import mimetypes
 from pathlib import Path
 from datetime import datetime
 
-import zeroconf
-from zeroconf import ServiceListener, ServiceInfo
 import qrcode
 from PIL import Image
 import io
@@ -42,6 +40,85 @@ class Device:
         self.last_seen = datetime.now()
 
 
+class UDPDiscovery:
+    """UDP-based device discovery (works without mDNS)"""
+    DISCOVERY_PORT = 8766
+    BROADCAST_PORT = 8767
+    MESSAGE_ANNOUNCE = b"PYDROP_ANNOUNCE"
+    MESSAGE_DISCOVER = b"PYDROP_DISCOVER"
+    
+    def __init__(self, device_id: str, device_name: str, http_port: int, on_device_found):
+        self.device_id = device_id
+        self.device_name = device_name
+        self.http_port = http_port
+        self.on_device_found = on_device_found
+        self.running = False
+        self.sock = None
+        
+    def start(self):
+        self.running = True
+        threading.Thread(target=self._listen_loop, daemon=True).start()
+        threading.Thread(target=self._broadcast_loop, daemon=True).start()
+        
+    def _listen_loop(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            self.sock.settimeout(5)
+            self.sock.bind(('', self.DISCOVERY_PORT))
+            
+            while self.running:
+                try:
+                    data, addr = self.sock.recvfrom(1024)
+                    local_ip = self._get_local_ip()
+                    if addr[0] != local_ip:
+                        self._handle_message(data, addr[0])
+                except socket.timeout:
+                    continue
+                except:
+                    break
+        except Exception as e:
+            print(f"UDP listen error: {e}")
+            
+    def _broadcast_loop(self):
+        while self.running:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                msg = f"PYDROP_ANNOUNCE|{self.device_id}|{self.device_name}|{self.http_port}"
+                sock.sendto(msg.encode(), ('255.255.255.255', self.BROADCAST_PORT))
+                sock.close()
+            except:
+                pass
+            threading.Event().wait(5)
+            
+    def _handle_message(self, data: bytes, addr: str):
+        try:
+            msg = data.decode()
+            if msg.startswith("PYDROP_ANNOUNCE"):
+                parts = msg.split("|")
+                if len(parts) >= 4:
+                    remote_id = parts[1]
+                    if remote_id != self.device_id:
+                        device = Device(parts[2], addr, 8765, int(parts[3]), remote_id)
+                        self.on_device_found(device)
+        except:
+            pass
+            
+    def _get_local_ip(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('10.255.255.255', 1))
+            return s.getsockname()[0]
+        except:
+            return '127.0.0.1'
+            
+    def stop(self):
+        self.running = False
+        if self.sock:
+            self.sock.close()
+
+
 class PyDropServer:
     def __init__(self, device_name: str = None):
         self.device_name = device_name or socket.gethostname()
@@ -55,7 +132,7 @@ class PyDropServer:
         self.sent_files: dict[str, dict] = {}
         
         self.running = False
-        self.zeroconf = None
+        self.udp_discovery = None
         
         self.gui_callback = None
         
@@ -75,46 +152,31 @@ class PyDropServer:
     
     def start(self):
         self.running = True
-        threading.Thread(target=self._start_zeroconf, daemon=True).start()
+        # Start UDP discovery (faster than mDNS)
+        self.udp_discovery = UDPDiscovery(
+            self.device_id, 
+            self.device_name, 
+            self.http_port,
+            self._on_device_found
+        )
+        self.udp_discovery.start()
         threading.Thread(target=self._start_http_server, daemon=True).start()
         threading.Thread(target=self._run_ws_loop, daemon=True).start()
+        
+    def _on_device_found(self, device: Device):
+        if device.device_id not in self.devices:
+            self.devices[device.device_id] = device
+            if self.gui_callback:
+                self.gui_callback('device_found', {
+                    'id': device.device_id,
+                    'name': device.name,
+                    'address': device.address,
+                    'http_port': device.http_port
+                })
         
     def _run_ws_loop(self):
         asyncio.run(self._start_websocket())
         
-    def _start_zeroconf(self):
-        self.zeroconf = zeroconf.Zeroconf()
-        service_type = "_pydrop._tcp.local."
-        service_name = f"{self.device_name}.{service_type}"
-        
-        local_ip = self.get_local_ip()
-        
-        desc = {
-            'deviceId': self.device_id,
-            'deviceName': self.device_name,
-            'wsPort': str(self.port),
-            'httpPort': str(self.http_port)
-        }
-        
-        service_info = ServiceInfo(
-            service_type,
-            service_name,
-            addresses=[socket.inet_aton(local_ip)],
-            port=self.discovery_port,
-            properties=desc,
-            server=f"{self.device_id}.local."
-        )
-        
-        try:
-            self.zeroconf.register_service(service_info)
-            listener = DiscoveryListener(self)
-            browser = zeroconf.ServiceBrowser(self.zeroconf, service_type, listener)
-            print(f"mDNS service registered: {service_name}")
-            while self.running:
-                threading.Event().wait(1)
-        except Exception as e:
-            print(f"Failed to register mDNS: {e}")
-            
     def _start_http_server(self):
         asyncio.run(self._run_http_server())
         
@@ -334,42 +396,8 @@ class PyDropServer:
             
     def stop(self):
         self.running = False
-        if self.zeroconf:
-            self.zeroconf.close()
-
-
-class DiscoveryListener(ServiceListener):
-    def __init__(self, server: PyDropServer):
-        self.server = server
-        
-    def add_service(self, zc: zeroconf.Zeroconf, type_: str, name: str):
-        info = zc.get_service_info(type_, name)
-        if info:
-            props = info.properties
-            device_id = props.get(b'deviceId', b'').decode()
-            
-            if device_id != self.server.device_id:
-                address = socket.inet_ntoa(info.addresses[0])
-                ws_port = int(props.get(b'wsPort', b'8765').decode())
-                http_port = int(props.get(b'httpPort', b'8080').decode())
-                device_name = props.get(b'deviceName', b'Unknown').decode()
-                
-                device = Device(device_name, address, ws_port, http_port, device_id)
-                self.server.devices[device_id] = device
-                
-                if self.server.gui_callback:
-                    self.server.gui_callback('device_found', {
-                        'id': device_id,
-                        'name': device_name,
-                        'address': address,
-                        'http_port': http_port
-                    })
-                    
-    def remove_service(self, zc: zeroconf.Zeroconf, type_: str, name: str):
-        pass
-        
-    def update_service(self, zc: zeroconf.Zeroconf, type_: str, name: str):
-        pass
+        if self.udp_discovery:
+            self.udp_discovery.stop()
 
 
 class PyDropGUI:
