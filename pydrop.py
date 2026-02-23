@@ -354,35 +354,49 @@ class PyDropServer:
                 self.gui_callback('file_offer', data)
                 
     def send_file_to_device(self, device: Device, file_path: str):
+        """Send a file to a remote device via HTTP multipart upload."""
         try:
-            with open(file_path, 'rb') as f:
-                files = {'file': f}
-                req = urllib.request.Request(
-                    f"http://{device.address}:{device.http_port}/api/upload",
-                    data=f,
-                    method='POST'
-                )
-                # Use multipart form data
-                import multipart
-                
-            file_id = uuid.uuid4().hex[:8]
             filename = os.path.basename(file_path)
-            file_size = os.path.getsize(file_path)
-            
+            mime_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
+            boundary = '----WebKitFormBoundary' + uuid.uuid4().hex
+
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+
+            body = f'--{boundary}\r\n'.encode()
+            body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
+            body += f'Content-Type: {mime_type}\r\n\r\n'.encode()
+            body += file_data
+            body += f'\r\n--{boundary}--\r\n'.encode()
+
+            req = urllib.request.Request(
+                f"http://{device.address}:{device.http_port}/api/upload",
+                data=body,
+                method='POST',
+                headers={
+                    'Content-Type': f'multipart/form-data; boundary={boundary}',
+                    'Content-Length': str(len(body))
+                }
+            )
+            urllib.request.urlopen(req, timeout=60)
+
+            file_id = uuid.uuid4().hex[:8]
+            file_size = len(file_data)
+
             self.sent_files[file_id] = {
                 'name': filename,
                 'size': file_size,
                 'time': datetime.now().isoformat(),
                 'to': device.name
             }
-            
+
             if self.gui_callback:
                 self.gui_callback('file_sent', {
                     'name': filename,
                     'size': file_size,
                     'to': device.name
                 })
-                
+
             return True
         except Exception as e:
             print(f"Failed to send file: {e}")

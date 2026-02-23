@@ -22,6 +22,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.InetAddress
@@ -116,7 +117,7 @@ class MainActivity : AppCompatActivity() {
         
         lifecycleScope.launch {
             try {
-                server = PyDropServer(httpPort, deviceId, this@MainActivity) { event, data ->
+                server = PyDropServer(httpPort, deviceId, deviceName, localIp, this@MainActivity) { event, data ->
                     runOnUiThread {
                         handleServerEvent(event, data)
                     }
@@ -152,32 +153,13 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun generateQrCode() {
-        lifecycleScope.launch {
-            try {
-                val url = "http://$localIp:$httpPort/api/qr"
-                val response = withContext(Dispatchers.IO) {
-                    client.newCall(Request.Builder().url(url).build()).execute()
-                }
-                
-                if (response.isSuccessful) {
-                    val bytes = response.body?.bytes()
-                    bytes?.let {
-                        binding.ivQrCode.setImageBitmap(
-                            android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)
-                        )
-                    }
-                }
-            } catch (e: Exception) {
-                // QR generation failed, use fallback
-                try {
-                    val content = "pydrop://$localIp:$httpPort/$deviceId"
-                    val encoder = BarcodeEncoder()
-                    val bitmap = encoder.encodeBitmap(content, BarcodeFormat.QR_CODE, 200, 200)
-                    binding.ivQrCode.setImageBitmap(bitmap)
-                } catch (e2: Exception) {
-                    binding.ivQrCode.visibility = View.GONE
-                }
-            }
+        try {
+            val content = "pydrop://$localIp:$httpPort/$deviceId"
+            val encoder = BarcodeEncoder()
+            val bitmap = encoder.encodeBitmap(content, BarcodeFormat.QR_CODE, 200, 200)
+            binding.ivQrCode.setImageBitmap(bitmap)
+        } catch (e: Exception) {
+            binding.ivQrCode.visibility = View.GONE
         }
     }
     
@@ -303,7 +285,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 
                 if (response.isSuccessful) {
-                    val json = JSONArray(response.body?.string() ?: "[]")
+                    val body = response.body?.string() ?: return@launch
+                    val jsonObj = JSONObject(body)
+                    val json = jsonObj.getJSONArray("files")
                     files.clear()
                     for (i in 0 until json.length()) {
                         val obj = json.getJSONObject(i)

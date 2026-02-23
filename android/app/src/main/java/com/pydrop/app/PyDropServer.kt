@@ -12,6 +12,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 class PyDropServer(
     private val port: Int,
     private val deviceId: String,
+    private val deviceName: String,
+    private val localIp: String,
     private val context: Context,
     private val onEvent: (String, Map<String, Any>) -> Unit
 ) : NanoHTTPD(port) {
@@ -59,21 +61,26 @@ class PyDropServer(
     private fun serveInfo(): Response {
         val json = JSONObject().apply {
             put("deviceId", deviceId)
+            put("deviceName", deviceName)
+            put("ip", localIp)
+            put("httpPort", port)
         }
         return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
     }
 
     private fun serveFiles(): Response {
-        val json = org.json.JSONArray()
+        val jsonArray = org.json.JSONArray()
         receivedFiles.forEach { file ->
-            json.put(JSONObject().apply {
+            jsonArray.put(JSONObject().apply {
                 put("id", file["id"])
                 put("name", file["name"])
                 put("size", file["size"])
                 put("time", file["time"])
+                put("direction", "received")
             })
         }
-        return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
+        val wrapper = JSONObject().put("files", jsonArray)
+        return newFixedLengthResponse(Response.Status.OK, "application/json", wrapper.toString())
     }
 
     private fun serveDownload(session: IHTTPSession): Response {
@@ -136,7 +143,7 @@ class PyDropServer(
     }
 
     private fun serveQr(): Response {
-        val qrData = "pydrop://:$port/$deviceId"
+        val qrData = "pydrop://$localIp:$port/$deviceId"
         return newFixedLengthResponse(Response.Status.OK, "text/plain", qrData)
     }
 
