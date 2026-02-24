@@ -1,5 +1,6 @@
 package com.pydrop.app
 
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -21,6 +22,7 @@ import java.util.*
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+    private lateinit var prefs: SharedPreferences
 
     private val fileTransferClient by lazy { FileTransferClient(contentResolver) }
 
@@ -54,7 +56,11 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        deviceId = UUID.randomUUID().toString().take(12)
+        prefs = getSharedPreferences("pydrop", MODE_PRIVATE)
+        
+        deviceId = prefs.getString("device_id", null) ?: UUID.randomUUID().toString().take(12).also {
+            prefs.edit().putString("device_id", it).apply()
+        }
         deviceName = android.os.Build.MODEL
         localIp = getLocalIpAddress()
 

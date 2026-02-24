@@ -40,7 +40,13 @@ class PyDropmDNS(
 
         isRunning = true
         scope.launch { listenForDevices() }
-        scope.launch { broadcastPresence() }
+        // Start broadcast after a short delay to let listener set up
+        scope.launch {
+            delay(500)
+            broadcastPresence()
+        }
+        // Also do an immediate burst for instant discovery
+        broadcastPresenceBurst()
     }
 
     private suspend fun listenForDevices() {
