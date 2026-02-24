@@ -2,6 +2,7 @@ package com.pydrop.app
 
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,23 +15,14 @@ import com.pydrop.app.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import java.net.InetAddress
 import java.net.NetworkInterface
 import java.util.*
-import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(120, TimeUnit.SECONDS)
-        .build()
+    private val fileTransferClient by lazy { FileTransferClient(contentResolver) }
 
     private val devices = mutableListOf<Device>()
     private lateinit var deviceAdapter: DeviceAdapter
@@ -102,16 +94,17 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                server = PyDropServer(httpPort, deviceId, deviceName, localIp, this@MainActivity) { event, data ->
+                val info = DeviceInfo(deviceId, deviceName, localIp)
+                server = PyDropServer(httpPort, info, this@MainActivity) { event ->
                     runOnUiThread {
-                        if (event == "file_received") {
-                            toast("File received: ${data["name"]}")
+                        when (event) {
+                            is PyDropEvent.FileReceived -> toast("File received: ${event.name}")
                         }
                     }
                 }
                 server?.start()
 
-                mDNS = PyDropmDNS(deviceName, deviceId, localIp, httpPort, this@MainActivity) { device ->
+                mDNS = PyDropmDNS(deviceName, deviceId, localIp, httpPort, this@MainActivity, lifecycleScope) { device ->
                     runOnUiThread { addDevice(device) }
                 }
                 mDNS?.start()
@@ -163,47 +156,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendFileToDevice(device: Device, uri: Uri) {
         lifecycleScope.launch {
-            try {
-                val fileName = getFileName(uri)
-                val fileBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: return@launch
-                val size = fmtSize(fileBytes.size.toLong())
-
-                setStatus(ready = false, text = "SENDING $fileName ($size)...")
-
-                val boundary = "----PyDropBoundary${UUID.randomUUID().toString().replace("-", "")}"
-                val body = buildMultipartBody(fileName, fileBytes, boundary).toRequestBody(
-                    "multipart/form-data; boundary=$boundary".toMediaType()
-                )
-                val request = Request.Builder()
-                    .url("http://${device.address}:${device.httpPort}/api/upload")
-                    .post(body)
-                    .build()
-
-                val ok = withContext(Dispatchers.IO) {
-                    client.newCall(request).execute().use { it.isSuccessful }
+            setStatus(ready = false, text = "SENDING...")
+            when (val result = withContext(Dispatchers.IO) {
+                fileTransferClient.sendFile(device, uri) { status ->
+                    setStatus(ready = false, text = status)
                 }
-
-                if (ok) {
+            }) {
+                is FileTransferClient.SendResult.Success -> {
                     setStatus(ready = true, text = "READY")
-                    toast("Sent $fileName to ${device.name}")
-                } else {
-                    setStatus(ready = true, text = "READY")
-                    toast("Send failed")
+                    toast("Sent ${result.fileName} to ${result.deviceName}")
                 }
-            } catch (e: Exception) {
-                setStatus(ready = true, text = "READY")
-                toast("Error: ${e.message}")
+                is FileTransferClient.SendResult.Failure -> {
+                    setStatus(ready = false, text = "SEND FAILED")
+                    toast("Error: ${result.error}")
+                }
             }
         }
-    }
-
-    private fun buildMultipartBody(fileName: String, fileBytes: ByteArray, boundary: String): ByteArray {
-        val header = "--$boundary\r\n" +
-            "Content-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n" +
-            "Content-Type: application/octet-stream\r\n\r\n"
-        val footer = "\r\n--$boundary--\r\n"
-        return header.toByteArray() + fileBytes + footer.toByteArray()
     }
 
     private fun getFileName(uri: Uri): String {
@@ -215,7 +183,7 @@ class MainActivity : AppCompatActivity() {
         return name
     }
 
-    private fun fmtSize(bytes: Long): String = when {
+    private fun formatFileSize(bytes: Long): String = when {
         bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
         bytes >= 1_048_576L     -> "%.1f MB".format(bytes / 1_048_576.0)
         bytes >= 1_024L         -> "%.1f KB".format(bytes / 1_024.0)
@@ -234,14 +202,14 @@ class MainActivity : AppCompatActivity() {
                 val addrs = iface.inetAddresses
                 while (addrs.hasMoreElements()) {
                     val addr = addrs.nextElement()
-                    if (!addr.isLoopbackAddress && addr is InetAddress) {
+                    if (!addr.isLoopbackAddress && addr !is java.net.Inet6Address) {
                         val ip = addr.hostAddress ?: continue
                         if (ip.contains(".")) return ip
                     }
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("MainActivity", "Failed to detect local IP address", e)
         }
         return "127.0.0.1"
     }
@@ -253,4 +221,3 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
-data class Device(val id: String, val name: String, val address: String, val httpPort: Int)

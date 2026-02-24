@@ -5,20 +5,21 @@ import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
 class PyDropServer(
     private val port: Int,
-    private val deviceId: String,
-    private val deviceName: String,
-    private val localIp: String,
+    private val deviceInfo: DeviceInfo,
     private val context: Context,
-    private val onEvent: (String, Map<String, Any>) -> Unit
+    private val onEvent: (PyDropEvent) -> Unit
 ) : NanoHTTPD(port) {
 
-    private val receivedFiles = CopyOnWriteArrayList<MutableMap<String, Any>>()
+    private val deviceId = deviceInfo.id
+    private val deviceName = deviceInfo.name
+    private val localIp = deviceInfo.ip
+
+    private val receivedFiles = CopyOnWriteArrayList<ReceivedFile>()
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
@@ -31,7 +32,9 @@ class PyDropServer(
             uri == "/api/download" -> serveDownload(session)
             uri == "/api/upload" && method == Method.POST -> handleUpload(session)
             uri == "/api/qr" -> serveQr()
-            else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
+            else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found").also {
+                Log.d("PyDropServer", "Unhandled route: $method $uri")
+            }
         }
     }
 
@@ -72,10 +75,10 @@ class PyDropServer(
         val jsonArray = org.json.JSONArray()
         receivedFiles.forEach { file ->
             jsonArray.put(JSONObject().apply {
-                put("id", file["id"])
-                put("name", file["name"])
-                put("size", file["size"])
-                put("time", file["time"])
+                put("id", file.id)
+                put("name", file.name)
+                put("size", file.size)
+                put("time", file.time)
                 put("direction", "received")
             })
         }
@@ -86,19 +89,22 @@ class PyDropServer(
     private fun serveDownload(session: IHTTPSession): Response {
         val params = session.parameters
         val fileId = params["id"]?.firstOrNull()
-            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "No file id")
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "No file id").also {
+                Log.w("PyDropServer", "Download failed: missing file id parameter")
+            }
 
-        val fileInfo = receivedFiles.find { it["id"] == fileId }
-            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found")
-        val path = fileInfo["path"] as? String
-            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File path not found")
-        val name = fileInfo["name"] as? String ?: "file"
+        val fileInfo = receivedFiles.find { it.id == fileId }
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found").also {
+                Log.w("PyDropServer", "Download failed: file not found for id=$fileId")
+            }
 
-        val f = File(path)
-        if (!f.exists()) return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found on disk")
+        val f = File(fileInfo.path)
+        if (!f.exists()) return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found on disk").also {
+            Log.w("PyDropServer", "Download failed: file not on disk: ${fileInfo.path}")
+        }
 
         val resp = newChunkedResponse(Response.Status.OK, "application/octet-stream", f.inputStream())
-        resp.addHeader("Content-Disposition", "attachment; filename=\"$name\"")
+        resp.addHeader("Content-Disposition", "attachment; filename=\"${fileInfo.name}\"")
         return resp
     }
 
@@ -126,15 +132,20 @@ class PyDropServer(
 
             File(tempPath).copyTo(dest, overwrite = true)
 
-            val fileInfo = mutableMapOf<String, Any>(
-                "id" to fileId,
-                "name" to filename,
-                "size" to dest.length(),
-                "time" to System.currentTimeMillis().toString(),
-                "path" to dest.absolutePath
+            val fileInfo = ReceivedFile(
+                id = fileId,
+                name = filename,
+                size = dest.length(),
+                time = System.currentTimeMillis().toString(),
+                path = dest.absolutePath
             )
             receivedFiles.add(fileInfo)
-            onEvent("file_received", fileInfo)
+            onEvent(PyDropEvent.FileReceived(
+                id = fileInfo.id,
+                name = fileInfo.name,
+                size = fileInfo.size,
+                time = fileInfo.time
+            ))
 
             newFixedLengthResponse(
                 Response.Status.OK, "application/json",
@@ -151,7 +162,4 @@ class PyDropServer(
         return newFixedLengthResponse(Response.Status.OK, "text/plain", qrData)
     }
 
-    fun stopServer() {
-        stop()
-    }
 }

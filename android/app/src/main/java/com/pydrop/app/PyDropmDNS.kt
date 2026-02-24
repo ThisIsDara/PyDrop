@@ -15,13 +15,11 @@ class PyDropmDNS(
     private val localIp: String,
     private val httpPort: Int,
     private val context: Context,
-    private val onDeviceFound: (Device) -> Unit
+    private val onDeviceFound: (Device) -> Unit,
+    private val scope: CoroutineScope
 ) {
 
     private var listenSocket: DatagramSocket? = null
-    private var multicastLock: WifiManager.MulticastLock? = null
-    private var isRunning = false
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     companion object {
         private const val TAG = "PyDropmDNS"
@@ -99,21 +97,24 @@ class PyDropmDNS(
         val buffer = message.toByteArray()
         val address = InetAddress.getByName("255.255.255.255")
 
-        while (isRunning) {
-            try {
-                DatagramSocket().use { sock ->
-                    sock.broadcast = true
-                    sock.send(DatagramPacket(buffer, buffer.size, address, DISCOVERY_PORT))
+        try {
+            DatagramSocket().use { sock ->
+                sock.broadcast = true
+                while (isRunning) {
+                    try {
+                        sock.send(DatagramPacket(buffer, buffer.size, address, DISCOVERY_PORT))
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Broadcast error: ${e.message}")
+                    }
+                    delay(3000)
                 }
-                Log.d(TAG, "Broadcast presence on port $DISCOVERY_PORT")
-            } catch (e: Exception) {
-                Log.e(TAG, "Broadcast error: ${e.message}")
             }
-            delay(3000)
+        } catch (e: Exception) {
+            Log.e(TAG, "Broadcast socket error: ${e.message}")
         }
     }
 
-    fun discover() {
+    fun broadcastPresenceBurst() {
         scope.launch {
             try {
                 val message = "$MESSAGE_ANNOUNCE|$deviceId|$deviceName|$httpPort"
@@ -137,7 +138,6 @@ class PyDropmDNS(
     fun stop() {
         isRunning = false
         listenSocket?.close()
-        scope.cancel()
         multicastLock?.let { if (it.isHeld) it.release() }
     }
 }
