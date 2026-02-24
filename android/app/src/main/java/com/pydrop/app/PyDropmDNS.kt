@@ -15,13 +15,13 @@ class PyDropmDNS(
     private val localIp: String,
     private val httpPort: Int,
     private val context: Context,
-    private val onDeviceFound: (Device) -> Unit,
-    private val scope: CoroutineScope
+    private val onDeviceFound: (Device) -> Unit
 ) {
 
     private var listenSocket: DatagramSocket? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var isRunning = false
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     companion object {
         private const val TAG = "PyDropmDNS"
@@ -140,6 +140,7 @@ class PyDropmDNS(
     fun stop() {
         isRunning = false
         listenSocket?.close()
+        scope.cancel()
         multicastLock?.let { if (it.isHeld) it.release() }
     }
 }

@@ -104,9 +104,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 server?.start()
 
-                mDNS = PyDropmDNS(deviceName, deviceId, localIp, httpPort, this@MainActivity, { device ->
+                mDNS = PyDropmDNS(deviceName, deviceId, localIp, httpPort, this@MainActivity) { device ->
                     runOnUiThread { addDevice(device) }
-                }, lifecycleScope)
+                }
                 mDNS?.start()
 
                 setStatus(ready = true, text = "READY")
