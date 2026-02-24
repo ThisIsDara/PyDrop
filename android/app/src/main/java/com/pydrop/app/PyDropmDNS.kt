@@ -30,6 +30,8 @@ class PyDropmDNS(
     }
 
     fun start() {
+        Log.d(TAG, "PyDropmDNS.start() called")
+        
         // Acquire MulticastLock so the Wi-Fi chip doesn't silently drop
         // incoming UDP broadcast packets (critical on most Android devices).
         val wifi = context.applicationContext
@@ -38,10 +40,18 @@ class PyDropmDNS(
             it.setReferenceCounted(true)
             it.acquire()
         }
+        Log.d(TAG, "MulticastLock acquired")
 
         isRunning = true
-        scope.launch { listenForDevices() }
-        scope.launch { broadcastPresence() }
+        scope.launch { 
+            Log.d(TAG, "Starting listenForDevices coroutine")
+            listenForDevices() 
+        }
+        scope.launch { 
+            Log.d(TAG, "Starting broadcastPresence coroutine")
+            broadcastPresence() 
+        }
+        Log.d(TAG, "Coroutines launched")
     }
 
     private suspend fun listenForDevices() {
@@ -99,20 +109,27 @@ class PyDropmDNS(
         val buffer = message.toByteArray()
         val address = InetAddress.getByName("255.255.255.255")
 
+        Log.d(TAG, "Starting broadcast to $address:$DISCOVERY_PORT with message: $message")
+        
+        var sock: DatagramSocket? = null
         try {
-            DatagramSocket().use { sock ->
-                sock.broadcast = true
-                while (isRunning) {
-                    try {
-                        sock.send(DatagramPacket(buffer, buffer.size, address, DISCOVERY_PORT))
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Broadcast error: ${e.message}")
-                    }
-                    delay(3000)
+            sock = DatagramSocket()
+            sock.broadcast = true
+            Log.d(TAG, "Broadcast socket created, starting loop")
+            while (isRunning) {
+                try {
+                    sock.send(DatagramPacket(buffer, buffer.size, address, DISCOVERY_PORT))
+                    Log.d(TAG, "Broadcast sent")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Broadcast send error: ${e.message}", e)
                 }
+                delay(3000)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Broadcast socket error: ${e.message}")
+            Log.e(TAG, "Broadcast socket error: ${e.message}", e)
+        } finally {
+            sock?.close()
+            Log.d(TAG, "Broadcast socket closed")
         }
     }
 
