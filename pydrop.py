@@ -2,6 +2,7 @@ import asyncio
 import os
 import socket
 import threading
+import time
 import uuid
 import mimetypes
 import tkinter as tk
@@ -59,9 +60,11 @@ class UDPDiscovery:
         self.on_device_found = on_device_found
         self.running         = False
         self._sock           = None
+        self._stop_event     = threading.Event()
 
     def start(self):
         self.running = True
+        self._stop_event.clear()
         threading.Thread(target=self._listen,    daemon=True).start()
         threading.Thread(target=self._broadcast, daemon=True).start()
 
@@ -95,7 +98,7 @@ class UDPDiscovery:
                     s.sendto(msg, ('255.255.255.255', self.DISCOVERY_PORT))
             except Exception:
                 pass
-            threading.Event().wait(3)
+            self._stop_event.wait(3)  # wakes immediately on stop()
 
     def _handle(self, data: bytes, addr: str):
         try:
@@ -114,6 +117,7 @@ class UDPDiscovery:
 
     def stop(self):
         self.running = False
+        self._stop_event.set()
         if self._sock:
             self._sock.close()
 
@@ -153,7 +157,9 @@ class FileReceiver:
             if not field:
                 return web.Response(text='No file', status=400)
 
-            filename = field.filename or f"file_{int(datetime.now().timestamp())}"
+            filename = os.path.basename(field.filename or f"file_{int(datetime.now().timestamp())}")
+            if not filename:
+                filename = f"file_{int(datetime.now().timestamp())}"
             save_dir = Path(self.get_save_dir())
             save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -274,8 +280,9 @@ class PyDropApp:
         self.root = tk.Tk()
         self.root.title("PyDrop")
         self.root.configure(bg=C['bg'])
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
         self.root.geometry("430x560")
+        self.root.minsize(360, 480)
 
         # Fonts (Consolas ships with Windows — perfect monospace terminal feel)
         self.f_title   = ('Consolas', 16, 'bold')

@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.pydrop.app.databinding.ActivityMainBinding
@@ -73,7 +74,7 @@ class MainActivity : AppCompatActivity() {
         binding.tvHostname.text = deviceName
         binding.tvIp.text = "$localIp:$httpPort"
 
-        deviceAdapter = DeviceAdapter(devices) { device ->
+        deviceAdapter = DeviceAdapter { device ->
             pendingTargetDevice = device
             pickFileLauncher.launch("*/*")
         }
@@ -125,21 +126,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setStatus(ready: Boolean, text: String) {
-        val dotColor = if (ready) 0xFF22c55E.toInt() else 0xFFef4444.toInt()
-        binding.tvStatusDot.setTextColor(dotColor)
+        val color = ContextCompat.getColor(this, if (ready) R.color.green else R.color.red)
+        binding.tvStatusDot.setTextColor(color)
         binding.tvStatusText.text = text
-        binding.tvStatusText.setTextColor(dotColor)
+        binding.tvStatusText.setTextColor(color)
     }
 
     private fun addDevice(device: Device) {
         val existing = devices.indexOfFirst { it.id == device.id }
         if (existing >= 0) {
             devices[existing] = device
-            deviceAdapter.notifyItemChanged(existing)
         } else {
             devices.add(device)
-            deviceAdapter.notifyItemInserted(devices.size - 1)
         }
+        // submitList triggers DiffUtil on a background thread — no manual notify calls needed
+        deviceAdapter.submitList(devices.toList())
         binding.tvNoDevices.visibility = if (devices.isEmpty()) View.VISIBLE else View.GONE
     }
 
@@ -163,9 +164,9 @@ class MainActivity : AppCompatActivity() {
     private fun sendFileToDevice(device: Device, uri: Uri) {
         lifecycleScope.launch {
             try {
-                val inputStream = contentResolver.openInputStream(uri)
                 val fileName = getFileName(uri)
-                val fileBytes = inputStream?.readBytes() ?: return@launch
+                val fileBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: return@launch
                 val size = fmtSize(fileBytes.size.toLong())
 
                 setStatus(ready = false, text = "SENDING $fileName ($size)...")

@@ -111,16 +111,13 @@ class PyDropServer(
             val tempPath = files["file"]
                 ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "No file field")
 
-            // Bug 4 fix: NanoHTTPD does NOT put the multipart filename in session.parameters.
-            // The original filename is in the Content-Disposition header of the multipart field,
-            // which NanoHTTPD exposes via session.headers["content-disposition"].
-            // Fall back to a timestamped name if it can't be parsed.
-            val rawDisposition = session.headers["content-disposition"] ?: ""
-            val filename = Regex("""filename="([^"]+)"""")
-                .find(rawDisposition)
-                ?.groupValues?.get(1)
+            // NanoHTTPD puts the original filename into session.parameters under the field name
+            // (see decodeMultipartFormData: values.add(fileName) for binary parts).
+            // Strip any path components to prevent path traversal attacks.
+            val rawName = session.parameters["file"]?.firstOrNull()
                 ?.takeIf { it.isNotBlank() }
                 ?: "file_${System.currentTimeMillis()}"
+            val filename = File(rawName).name.ifBlank { "file_${System.currentTimeMillis()}" }
 
             val fileId = UUID.randomUUID().toString().take(8)
             val saveDir = File(context.filesDir, "received")
