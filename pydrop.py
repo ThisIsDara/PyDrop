@@ -2,15 +2,13 @@ import asyncio
 import os
 import socket
 import threading
-import time
 import uuid
 import mimetypes
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from pathlib import Path
 from datetime import datetime
-import urllib.request
-import io
+import http.client
 
 from aiohttp import web
 
@@ -91,14 +89,17 @@ class UDPDiscovery:
 
     def _broadcast(self):
         msg = f"PYDROP_ANNOUNCE|{self.device_id}|{self.device_name}|{self.http_port}".encode()
-        while self.running:
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                    s.sendto(msg, ('255.255.255.255', self.DISCOVERY_PORT))
-            except Exception:
-                pass
-            self._stop_event.wait(3)  # wakes immediately on stop()
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                while self.running:
+                    try:
+                        s.sendto(msg, ('255.255.255.255', self.DISCOVERY_PORT))
+                    except Exception:
+                        pass
+                    self._stop_event.wait(3)  # wakes immediately on stop()
+        except Exception as e:
+            print(f"[UDP] broadcast error: {e}")
 
     def _handle(self, data: bytes, addr: str):
         try:
@@ -131,18 +132,21 @@ class FileReceiver:
         self.on_file_received = on_file_received
         self.get_save_dir     = get_save_dir
         self.running          = False
+        self._runner          = None
+        self._loop            = None
 
     def start(self):
         self.running = True
         threading.Thread(target=lambda: asyncio.run(self._serve()), daemon=True).start()
 
     async def _serve(self):
-        app = web.Application()
+        self._loop = asyncio.get_running_loop()
+        app = web.Application(client_max_size=4 * 1024 * 1024 * 1024)  # 4 GB upload limit
         app.router.add_post('/api/upload', self._handle_upload)
         app.router.add_get('/api/info',    self._handle_info)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', self.http_port)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, '0.0.0.0', self.http_port)
         await site.start()
         while self.running:
             await asyncio.sleep(1)
@@ -190,36 +194,51 @@ class FileReceiver:
 
     def stop(self):
         self.running = False
+        if self._runner and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._runner.cleanup(), self._loop)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  File sender (runs on background thread)
 # ─────────────────────────────────────────────────────────────────────────────
 def send_file(device: Device, file_path: str) -> bool:
+    """Stream a file to a remote device via multipart POST without loading it all into memory."""
+    CHUNK_SIZE = 65536
     try:
         filename  = os.path.basename(file_path)
+        # Escape quotes in filename to prevent multipart header injection
+        safe_name = filename.replace('\\', '\\\\').replace('"', '\\"')
         mime_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
         boundary  = '----PyDropBoundary' + uuid.uuid4().hex
+        file_size = os.path.getsize(file_path)
 
+        header_bytes  = f'--{boundary}\r\n'.encode()
+        header_bytes += f'Content-Disposition: form-data; name="file"; filename="{safe_name}"\r\n'.encode()
+        header_bytes += f'Content-Type: {mime_type}\r\n\r\n'.encode()
+        footer_bytes  = f'\r\n--{boundary}--\r\n'.encode()
+
+        content_length = len(header_bytes) + file_size + len(footer_bytes)
+
+        conn = http.client.HTTPConnection(device.address, device.http_port, timeout=120)
+        conn.putrequest('POST', '/api/upload')
+        conn.putheader('Content-Type', f'multipart/form-data; boundary={boundary}')
+        conn.putheader('Content-Length', str(content_length))
+        conn.endheaders()
+
+        conn.send(header_bytes)
         with open(file_path, 'rb') as f:
-            file_data = f.read()
+            while True:
+                chunk = f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                conn.send(chunk)
+        conn.send(footer_bytes)
 
-        body  = f'--{boundary}\r\n'.encode()
-        body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
-        body += f'Content-Type: {mime_type}\r\n\r\n'.encode()
-        body += file_data
-        body += f'\r\n--{boundary}--\r\n'.encode()
-
-        req = urllib.request.Request(
-            f"http://{device.address}:{device.http_port}/api/upload",
-            data=body, method='POST',
-            headers={
-                'Content-Type':   f'multipart/form-data; boundary={boundary}',
-                'Content-Length': str(len(body)),
-            }
-        )
-        urllib.request.urlopen(req, timeout=120)
-        return True
+        resp = conn.getresponse()
+        ok = 200 <= resp.status < 300
+        resp.read()   # drain response body
+        conn.close()
+        return ok
     except Exception as e:
         print(f"[SEND] error: {e}")
         return False
@@ -230,16 +249,14 @@ def send_file(device: Device, file_path: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 def get_local_ip() -> str:
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('10.255.255.255', 1))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('10.255.255.255', 1))
+            return s.getsockname()[0]
     except Exception:
         return '127.0.0.1'
 
 
-def fmt_size(b: int) -> str:
+def format_file_size(b: int) -> str:
     n: float = float(b)
     for unit in ['B', 'KB', 'MB', 'GB']:
         if n < 1024:
@@ -254,6 +271,24 @@ def truncate_path(path: str, max_len: int = 50) -> str:
     return '\u2026' + path[-(max_len - 1):]
 
 
+def _get_or_create_device_id() -> str:
+    """Return a stable device ID, persisted to ~/.pydrop_id."""
+    id_path = Path.home() / '.pydrop_id'
+    try:
+        if id_path.exists():
+            stored = id_path.read_text().strip()
+            if stored:
+                return stored
+    except Exception:
+        pass
+    new_id = uuid.uuid4().hex[:12]
+    try:
+        id_path.write_text(new_id)
+    except Exception:
+        pass  # non-fatal — will regenerate next launch
+    return new_id
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  GUI — industrial amber terminal aesthetic
 # ─────────────────────────────────────────────────────────────────────────────
@@ -261,7 +296,7 @@ class PyDropApp:
     HTTP_PORT = 8080
 
     def __init__(self):
-        self.device_id   = uuid.uuid4().hex[:12]
+        self.device_id   = _get_or_create_device_id()
         self.device_name = socket.gethostname()
         self.local_ip    = get_local_ip()
         self.save_dir    = str(Path.home() / 'Downloads' / 'PyDrop')
@@ -570,7 +605,7 @@ class PyDropApp:
 
     # ── File received callback ────────────────────────────────────────────────
     def _on_file_received(self, info: dict):
-        line = f"\u2190 {info['name']}  [{fmt_size(info['size'])}]  {info['path']}"
+        line = f"\u2190 {info['name']}  [{format_file_size(info['size'])}]  {info['path']}"
         self.root.after(0, lambda: self._log_line(line, 'received'))
 
     # ── Log helpers ───────────────────────────────────────────────────────────
@@ -619,7 +654,7 @@ class PyDropApp:
                 fname = os.path.basename(p)
                 sz    = os.path.getsize(p)
                 self.root.after(0, lambda f=fname, s=sz, d=device: self._log_line(
-                    f"\u2192 {f}  [{fmt_size(s)}]  \u2192 {d.name} ({d.address})", 'sent'
+                    f"\u2192 {f}  [{format_file_size(s)}]  \u2192 {d.name} ({d.address})", 'sent'
                 ))
                 if send_file(device, p):
                     ok += 1

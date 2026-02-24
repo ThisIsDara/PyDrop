@@ -6,12 +6,12 @@ import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import kotlinx.coroutines.*
 
 class PyDropmDNS(
     private val deviceName: String,
     private val deviceId: String,
-    private val localIp: String,
     private val httpPort: Int,
     private val context: Context,
     private val onDeviceFound: (Device) -> Unit
@@ -19,7 +19,7 @@ class PyDropmDNS(
 
     private var listenSocket: DatagramSocket? = null
     private var multicastLock: WifiManager.MulticastLock? = null
-    private var isRunning = false
+    @Volatile private var isRunning = false
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     companion object {
@@ -51,9 +51,11 @@ class PyDropmDNS(
 
     private suspend fun listenForDevices() {
         try {
-            listenSocket = DatagramSocket(DISCOVERY_PORT).apply {
+            listenSocket = DatagramSocket(null).apply {
                 reuseAddress = true
+                broadcast = true
                 soTimeout = 2000
+                bind(InetSocketAddress(DISCOVERY_PORT))
             }
 
             Log.d(TAG, "Listening on UDP port $DISCOVERY_PORT")
@@ -125,13 +127,13 @@ class PyDropmDNS(
                 val message = "$MESSAGE_ANNOUNCE|$deviceId|$deviceName|$httpPort"
                 val buffer = message.toByteArray()
                 val address = InetAddress.getByName("255.255.255.255")
-                // Send a few bursts for reliability
-                repeat(3) {
-                    DatagramSocket().use { sock ->
-                        sock.broadcast = true
+                // Send a few bursts for reliability, reusing one socket
+                DatagramSocket().use { sock ->
+                    sock.broadcast = true
+                    repeat(3) {
                         sock.send(DatagramPacket(buffer, buffer.size, address, DISCOVERY_PORT))
+                        delay(100)
                     }
-                    delay(100)
                 }
                 Log.d(TAG, "Sent immediate discovery burst")
             } catch (e: Exception) {

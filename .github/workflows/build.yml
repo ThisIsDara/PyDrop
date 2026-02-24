@@ -28,12 +28,8 @@ jobs:
 
       - name: Build exe
         run: |
-          pyinstaller --onefile --name PyDrop --add-data "public;public" `
-            --hidden-import=websockets `
+          pyinstaller --onefile --name PyDrop `
             --hidden-import=aiohttp `
-            --hidden-import=PIL `
-            --hidden-import=qrcode `
-            --hidden-import=customtkinter `
             pydrop.py
 
       - name: Upload exe artifact

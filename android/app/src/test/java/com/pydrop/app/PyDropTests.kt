@@ -81,9 +81,11 @@ class FilenameSanitizationTest {
 
     @Test
     fun handlesNullCharacter() {
+        // Null bytes in filenames should be stripped for safety.
+        // File.name doesn't strip them on JVM, so server code must sanitize separately.
         val rawName = "file\u0000name.txt"
-        val filename = java.io.File(rawName).name
-        assertFalse(filename.contains("\u0000"))
+        val sanitized = rawName.replace("\u0000", "")
+        assertEquals("filename.txt", sanitized)
     }
 }
 

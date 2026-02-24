@@ -2,7 +2,6 @@
 
 # Core
 aiohttp>=3.9
-Pillow>=10.0
 
 # Build executable
 pyinstaller>=6.0

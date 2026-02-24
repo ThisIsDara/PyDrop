@@ -32,11 +32,27 @@ class FileTransferClient(
     ): SendResult {
         return try {
             val fileName = getFileName(uri)
+            val fileSize = contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+            onProgress("SENDING: $fileName")
+
             val streamingBody = object : RequestBody() {
                 override fun contentType() = "application/octet-stream".toMediaType()
+                override fun contentLength(): Long = fileSize
                 override fun writeTo(sink: BufferedSink) {
                     contentResolver.openInputStream(uri)?.use { stream ->
-                        sink.writeAll(stream.source())
+                        val source = stream.source()
+                        var totalWritten = 0L
+                        val buffer = okio.Buffer()
+                        while (true) {
+                            val read = source.read(buffer, 65536)
+                            if (read == -1L) break
+                            sink.write(buffer, read)
+                            totalWritten += read
+                            if (fileSize > 0) {
+                                val pct = (totalWritten * 100 / fileSize).toInt()
+                                onProgress("SENDING: $pct%")
+                            }
+                        }
                     }
                 }
             }

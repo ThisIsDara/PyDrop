@@ -15,6 +15,11 @@ class PyDropServer(
     private val onEvent: (PyDropEvent) -> Unit
 ) : NanoHTTPD(port) {
 
+    companion object {
+        /** Maximum upload size: 4 GB. Reject anything larger to prevent disk-fill DoS. */
+        private const val MAX_UPLOAD_BYTES = 4L * 1024 * 1024 * 1024
+    }
+
     private val deviceId = deviceInfo.id
     private val deviceName = deviceInfo.name
     private val localIp = deviceInfo.ip
@@ -109,6 +114,17 @@ class PyDropServer(
     }
 
     private fun handleUpload(session: IHTTPSession): Response {
+        // Check Content-Length header before parsing body to reject oversized uploads early
+        val contentLength = session.headers["content-length"]?.toLongOrNull() ?: 0L
+        if (contentLength > MAX_UPLOAD_BYTES) {
+            val resp = newFixedLengthResponse(
+                Response.Status.BAD_REQUEST, "text/plain",
+                "File too large (max ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB)"
+            )
+            Log.w("PyDropServer", "Rejected upload: Content-Length $contentLength exceeds limit")
+            return resp
+        }
+
         return try {
             // NanoHTTPD parses multipart and writes temp files; the map values are temp file paths
             val files = mutableMapOf<String, String>()

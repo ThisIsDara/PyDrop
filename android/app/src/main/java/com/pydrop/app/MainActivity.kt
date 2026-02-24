@@ -110,7 +110,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 server?.start()
 
-                mDNS = PyDropmDNS(deviceName, deviceId, localIp, httpPort, this@MainActivity) { device ->
+                mDNS = PyDropmDNS(deviceName, deviceId, httpPort, this@MainActivity) { device ->
                     runOnUiThread { addDevice(device) }
                 }
                 mDNS?.start()
@@ -165,7 +165,7 @@ class MainActivity : AppCompatActivity() {
             setStatus(ready = false, text = "SENDING...")
             when (val result = withContext(Dispatchers.IO) {
                 fileTransferClient.sendFile(device, uri) { status ->
-                    setStatus(ready = false, text = status)
+                    runOnUiThread { setStatus(ready = false, text = status) }
                 }
             }) {
                 is FileTransferClient.SendResult.Success -> {
@@ -178,22 +178,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-    }
-
-    private fun getFileName(uri: Uri): String {
-        var name = "file_${System.currentTimeMillis()}"
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (cursor.moveToFirst() && idx >= 0) name = cursor.getString(idx)
-        }
-        return name
-    }
-
-    private fun formatFileSize(bytes: Long): String = when {
-        bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
-        bytes >= 1_048_576L     -> "%.1f MB".format(bytes / 1_048_576.0)
-        bytes >= 1_024L         -> "%.1f KB".format(bytes / 1_024.0)
-        else                    -> "$bytes B"
     }
 
     private fun toast(msg: String) =
