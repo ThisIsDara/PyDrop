@@ -20,6 +20,8 @@ class PyDropmDNS(
 ) {
 
     private var listenSocket: DatagramSocket? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private var isRunning = false
 
     companion object {
         private const val TAG = "PyDropmDNS"
