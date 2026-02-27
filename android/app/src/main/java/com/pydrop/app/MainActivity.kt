@@ -115,6 +115,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 mDNS?.start()
 
+                startPruningStaleDevices()
                 setStatus(ready = true, text = "READY")
 
             } catch (e: Exception) {
@@ -131,7 +132,14 @@ class MainActivity : AppCompatActivity() {
         binding.tvStatusText.setTextColor(color)
     }
 
+    companion object {
+        /** A device is stale after 15 s (5 missed 3-second broadcasts). */
+        private const val STALE_TIMEOUT_MS = 15_000L
+        private const val PRUNE_INTERVAL_MS = 5_000L
+    }
+
     private fun addDevice(device: Device) {
+        device.lastSeen = System.currentTimeMillis()
         val existing = devices.indexOfFirst { it.id == device.id }
         if (existing >= 0) {
             devices[existing] = device
@@ -141,6 +149,21 @@ class MainActivity : AppCompatActivity() {
         // submitList triggers DiffUtil on a background thread — no manual notify calls needed
         deviceAdapter.submitList(devices.toList())
         binding.tvNoDevices.visibility = if (devices.isEmpty()) View.VISIBLE else View.GONE
+    }
+
+    private fun startPruningStaleDevices() {
+        lifecycleScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(PRUNE_INTERVAL_MS)
+                val now = System.currentTimeMillis()
+                val stale = devices.filter { now - it.lastSeen > STALE_TIMEOUT_MS }
+                if (stale.isNotEmpty()) {
+                    devices.removeAll(stale)
+                    deviceAdapter.submitList(devices.toList())
+                    binding.tvNoDevices.visibility = if (devices.isEmpty()) View.VISIBLE else View.GONE
+                }
+            }
+        }
     }
 
     private fun showDevicePicker(uri: Uri) {

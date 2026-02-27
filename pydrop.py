@@ -523,6 +523,7 @@ class PyDropApp:
                 self.root.after(0, lambda: self._log_line(
                     f"listening on {self.local_ip}:{self.HTTP_PORT}", 'info'
                 ))
+                self.root.after(0, self._prune_stale_devices)  # start pruning timer
             except Exception as e:
                 self.root.after(0, lambda: self._set_status(False))
                 self.root.after(0, lambda: self._log_line(f"startup error: {e}", 'err'))
@@ -530,9 +531,23 @@ class PyDropApp:
         threading.Thread(target=_run, daemon=True).start()
 
     # ── Device discovery callback ─────────────────────────────────────────────
+    STALE_TIMEOUT = 15  # seconds — 5 missed broadcasts at 3s interval
+
     def _on_device_found(self, device: Device):
         self.devices[device.device_id] = device
         self.root.after(0, self._redraw_devices)
+
+    def _prune_stale_devices(self):
+        now = datetime.now()
+        stale_ids = [
+            did for did, dev in self.devices.items()
+            if (now - dev.last_seen).total_seconds() > self.STALE_TIMEOUT
+        ]
+        if stale_ids:
+            for did in stale_ids:
+                del self.devices[did]
+            self._redraw_devices()
+        self.root.after(5000, self._prune_stale_devices)  # check every 5s
 
     def _redraw_devices(self):
         for w in self._dev_list.winfo_children():

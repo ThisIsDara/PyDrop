@@ -16,7 +16,8 @@ class DeviceAdapter(
     companion object {
         private val DIFF = object : DiffUtil.ItemCallback<Device>() {
             override fun areItemsTheSame(a: Device, b: Device) = a.id == b.id
-            override fun areContentsTheSame(a: Device, b: Device) = a == b
+            override fun areContentsTheSame(a: Device, b: Device) =
+                a.name == b.name && a.address == b.address && a.httpPort == b.httpPort
         }
     }
 

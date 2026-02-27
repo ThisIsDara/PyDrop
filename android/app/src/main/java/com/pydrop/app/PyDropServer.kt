@@ -146,7 +146,9 @@ class PyDropServer(
             saveDir.mkdirs()
             val dest = File(saveDir, "${fileId}_$filename")
 
-            File(tempPath).copyTo(dest, overwrite = true)
+            val tempFile = File(tempPath)
+            tempFile.copyTo(dest, overwrite = true)
+            tempFile.delete()  // Clean up NanoHTTPD temp file to avoid disk leak
 
             val fileInfo = ReceivedFile(
                 id = fileId,
